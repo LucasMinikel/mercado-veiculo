@@ -1,0 +1,47 @@
+services:
+  cliente-service:
+    build: ./services/cliente-service
+    ports:
+      - "8080:8080"
+    environment:
+      - DEBUG=1
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./services/cliente-service:/app
+    command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  veiculo-service:
+    build: ./services/veiculo-service
+    ports:
+      - "8081:8080"
+    environment:
+      - DEBUG=1
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./services/veiculo-service:/app
+    command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  tests:
+    build: ./tests
+    depends_on:
+      - cliente-service
+      - veiculo-service
+    environment:
+      - VEICULO_SERVICE_URL=http://veiculo-service:8080
+      - CLIENTE_SERVICE_URL=http://cliente-service:8080
+    volumes:
+      - ./tests:/app
+    profiles:
+      - test
