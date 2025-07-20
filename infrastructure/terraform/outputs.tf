@@ -8,6 +8,11 @@ output "veiculo_service_url" {
   value       = google_cloud_run_v2_service.veiculo_service.uri
 }
 
+output "pagamento_service_url" {
+  description = "URL do serviço pagamento"
+  value       = google_cloud_run_v2_service.pagamento_service.uri
+}
+
 output "artifact_registry_repository_url" {
   description = "URL do repositório Artifact Registry"
   value       = "${var.region}-docker.pkg.dev/${var.project_id}/${local.repository_name}"

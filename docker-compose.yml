@@ -33,14 +33,33 @@ services:
       retries: 3
     restart: unless-stopped
 
+  pagamento-service:
+    build: ./services/pagamento-service
+    ports:
+      - "8082:8080"
+    environment:
+      - DEBUG=1
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./services/pagamento-service:/app
+    command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
   tests:
     build: ./tests
     depends_on:
       - cliente-service
       - veiculo-service
+      - pagamento-service
     environment:
       - VEICULO_SERVICE_URL=http://veiculo-service:8080
       - CLIENTE_SERVICE_URL=http://cliente-service:8080
+      - PAGAMENTO_SERVICE_URL=http://pagamento-service:8080
     volumes:
       - ./tests:/app
     profiles:

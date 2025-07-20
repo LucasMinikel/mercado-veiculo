@@ -1,6 +1,6 @@
 .PHONY: help setup deploy deploy-code destroy health logs clean dev test build push auth-check up down status fix-dns
 
-# Load configuration
+# Carregar configuração
 -include .env
 
 PROJECT_ID ?= $(shell grep 'project_id' infrastructure/terraform/terraform.tfvars 2>/dev/null | cut -d'"' -f2)
@@ -70,9 +70,11 @@ health: ## Verifica saúde dos serviços
 	@cd infrastructure/terraform && \
 	CLIENTE_URL=$$(terraform output -raw cliente_service_url 2>/dev/null) && \
 	VEICULO_URL=$$(terraform output -raw veiculo_service_url 2>/dev/null) && \
+	PAGAMENTO_URL=$$(terraform output -raw pagamento_service_url 2>/dev/null) && \
 	echo "🔍 Verificando saúde dos serviços..." && \
 	curl -fsS "$$CLIENTE_URL/health" && echo "✅ Cliente OK" || echo "❌ Cliente com problema"; \
-	curl -fsS "$$VEICULO_URL/health" && echo "✅ Veículo OK" || echo "❌ Veículo com problema"
+	curl -fsS "$$VEICULO_URL/health" && echo "✅ Veículo OK" || echo "❌ Veículo com problema"; \
+	curl -fsS "$$PAGAMENTO_URL/health" && echo "✅ Pagamento OK" || echo "❌ Pagamento com problema"
 
 logs: auth-check ## Mostra logs dos serviços no Cloud Run
 	@echo "📋 Logs do Cliente Service:"
@@ -80,23 +82,27 @@ logs: auth-check ## Mostra logs dos serviços no Cloud Run
 	@echo ""
 	@echo "📋 Logs do Veículo Service:"
 	@gcloud run services logs read veiculo-service --region=$(REGION) --limit=50 --project=$(PROJECT_ID)
+	@echo ""
+	@echo "📋 Logs do Pagamento Service:"
+	@gcloud run services logs read pagamento-service --region=$(REGION) --limit=50 --project=$(PROJECT_ID)
 
 status: ## Mostra status dos serviços
 	@echo "🌐 Status dos serviços:"
 	@if [ -f "infrastructure/terraform/terraform.tfvars" ]; then \
 		cd infrastructure/terraform && \
 		echo "🔗 Cliente Service: $$(terraform output -raw cliente_service_url 2>/dev/null || echo 'Não deployado')" && \
-		echo "🔗 Veículo Service: $$(terraform output -raw veiculo_service_url 2>/dev/null || echo 'Não deployado')"; \
+		echo "🔗 Veículo Service: $$(terraform output -raw veiculo_service_url 2>/dev/null || echo 'Não deployado')" && \
+		echo "🔗 Pagamento Service: $$(terraform output -raw pagamento_service_url 2>/dev/null || echo 'Não deployado')"; \
 	else \
 		echo "❌ Serviços não deployados"; \
 	fi
 
-## Local development
+## Desenvolvimento local
 build: ## Constrói as imagens localmente
 	@docker-compose build
 
 up: ## Inicia os serviços localmente
-	@docker-compose up -d cliente-service veiculo-service
+	@docker-compose up -d cliente-service veiculo-service pagamento-service
 
 down: ## Para os serviços locais
 	@docker-compose down
@@ -105,16 +111,18 @@ test: up ## Executa os testes localmente
 	@echo "⏳ Aguardando serviços..."
 	@until curl -sf http://localhost:8080/health >/dev/null 2>&1; do sleep 2; done
 	@until curl -sf http://localhost:8081/health >/dev/null 2>&1; do sleep 2; done
+	@until curl -sf http://localhost:8082/health >/dev/null 2>&1; do sleep 2; done
 	@docker-compose run --rm tests
 
 dev: up ## Modo desenvolvimento local com logs
 	@echo "🚀 Iniciando modo desenvolvimento..."
 	@echo "📋 Serviços disponíveis:"
-	@echo "   Cliente: http://localhost:8080"
-	@echo "   Veículo: http://localhost:8081"
+	@echo "   Cliente:   http://localhost:8080"
+	@echo "   Veículo:   http://localhost:8081"
+	@echo "   Pagamento: http://localhost:8082"
 	@echo ""
 	@echo "📝 Logs em tempo real (Ctrl+C para sair):"
-	@docker-compose logs -f cliente-service veiculo-service
+	@docker-compose logs -f cliente-service veiculo-service pagamento-service
 
 clean: ## Limpa recursos locais
 	@docker-compose down -v
