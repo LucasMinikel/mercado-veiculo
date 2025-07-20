@@ -50,6 +50,7 @@ timeout 180 gcloud services enable \
     cloudbuild.googleapis.com \
     artifactregistry.googleapis.com \
     iam.googleapis.com \
+    workflows.googleapis.com \
     --project=$PROJECT_ID \
     --quiet
 
@@ -101,6 +102,12 @@ cd "$PROJECT_ROOT/services/veiculo-service"
 docker build -t "${REPO_URL}/veiculo-service:latest" .
 docker push "${REPO_URL}/veiculo-service:latest"
 
+# Construir e enviar pagamento-service
+echo -e "${AMARELO}🔨 Construindo pagamento-service...${NC}"
+cd "$PROJECT_ROOT/services/pagamento-service"
+docker build -t "${REPO_URL}/pagamento-service:latest" .
+docker push "${REPO_URL}/pagamento-service:latest"
+
 # ETAPA 3: Atualizar serviços Cloud Run com imagens reais
 echo -e "${VERDE}🔄 ETAPA 3: Atualizando serviços Cloud Run com imagens reais...${NC}"
 cd "$TERRAFORM_DIR"
@@ -110,6 +117,7 @@ timeout 600 terraform plan -input=false -out=tfplan \
     -var="region=$REGION" \
     -var="cliente_image=${REPO_URL}/cliente-service:latest" \
     -var="veiculo_image=${REPO_URL}/veiculo-service:latest" \
+    -var="pagamento_image=${REPO_URL}/pagamento-service:latest" \
     -var="use_real_images=true"
 
 timeout 900 terraform apply -input=false tfplan
@@ -119,15 +127,18 @@ rm -f tfplan
 echo -e "${VERDE}📋 Obtendo informações dos serviços...${NC}"
 CLIENTE_URL=$(terraform output -raw cliente_service_url)
 VEICULO_URL=$(terraform output -raw veiculo_service_url)
+PAGAMENTO_URL=$(terraform output -raw pagamento_service_url)
 
 echo -e "${VERDE}✅ Deploy concluído com sucesso!${NC}"
 echo -e "${AMARELO}🌐 URLs dos serviços:${NC}"
 echo -e "   Cliente Service: $CLIENTE_URL"
 echo -e "   Veiculo Service: $VEICULO_URL"
+echo -e "   Pagamento Service: $PAGAMENTO_URL"
 echo -e ""
 echo -e "${AMARELO}🔍 URLs para Health Check:${NC}"
 echo -e "   Cliente Health: $CLIENTE_URL/health"
 echo -e "   Veiculo Health: $VEICULO_URL/health"
+echo -e "   Pagamento Health: $PAGAMENTO_URL/health"
 
 # Health check simples
 echo -e "${VERDE}🧪 Testando endpoints de saúde...${NC}"
@@ -143,6 +154,12 @@ if timeout 30 curl -f -s "$VEICULO_URL/health" > /dev/null; then
     echo -e "${VERDE}✅ Veiculo service saudável${NC}"
 else
     echo -e "${AMARELO}⚠️  Veiculo service pode precisar de mais alguns minutos${NC}"
+fi
+
+if timeout 30 curl -f -s "$PAGAMENTO_URL/health" > /dev/null; then
+    echo -e "${VERDE}✅ Pagamento service saudável${NC}"
+else
+    echo -e "${AMARELO}⚠️  Pagamento service pode precisar de mais alguns minutos${NC}"
 fi
 
 echo -e "${VERDE}🎉 Processo de deploy concluído!${NC}"

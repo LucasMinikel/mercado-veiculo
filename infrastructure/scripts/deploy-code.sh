@@ -66,6 +66,12 @@ cd "$PROJECT_ROOT/services/veiculo-service"
 docker build -t "${REPO_URL}/veiculo-service:latest" .
 docker push "${REPO_URL}/veiculo-service:latest"
 
+# Construir e enviar pagamento-service
+echo -e "${VERDE}🔨 Construindo e enviando pagamento-service...${NC}"
+cd "$PROJECT_ROOT/services/pagamento-service"
+docker build -t "${REPO_URL}/pagamento-service:latest" .
+docker push "${REPO_URL}/pagamento-service:latest"
+
 # Atualizar serviços Cloud Run diretamente
 echo -e "${VERDE}🔄 Atualizando serviços Cloud Run...${NC}"
 
@@ -83,20 +89,30 @@ gcloud run services update veiculo-service \
     --project="$PROJECT_ID" \
     --quiet
 
+echo -e "${AMARELO}📱 Atualizando pagamento-service...${NC}"
+gcloud run services update pagamento-service \
+    --image="${REPO_URL}/pagamento-service:latest" \
+    --region="$REGION" \
+    --project="$PROJECT_ID" \
+    --quiet
+
 # URLs
 echo -e "${VERDE}📋 Obtendo URLs dos serviços...${NC}"
 cd "$TERRAFORM_DIR"
 CLIENTE_URL=$(terraform output -raw cliente_service_url 2>/dev/null)
 VEICULO_URL=$(terraform output -raw veiculo_service_url 2>/dev/null)
+PAGAMENTO_URL=$(terraform output -raw pagamento_service_url 2>/dev/null)
 
 echo -e "${VERDE}✅ Deploy do código concluído com sucesso!${NC}"
 echo -e "${AMARELO}🌐 URLs dos serviços:${NC}"
 echo -e "   Cliente: $CLIENTE_URL"
 echo -e "   Veiculo: $VEICULO_URL"
+echo -e "   Pagamento: $PAGAMENTO_URL"
 echo -e ""
 echo -e "${AMARELO}🔍 URLs para Health Check:${NC}"
 echo -e "   Cliente: $CLIENTE_URL/health"
 echo -e "   Veiculo: $VEICULO_URL/health"
+echo -e "   Pagamento: $PAGAMENTO_URL/health"
 
 echo -e "${VERDE}🧪 Testando endpoints de saúde...${NC}"
 sleep 15
@@ -111,6 +127,12 @@ if timeout 30 curl -f -s "$VEICULO_URL/health" > /dev/null; then
     echo -e "${VERDE}✅ Veiculo saudável${NC}"
 else
     echo -e "${AMARELO}⚠️  Veiculo em atualização... (pode levar alguns instantes)${NC}"
+fi
+
+if timeout 30 curl -f -s "$PAGAMENTO_URL/health" > /dev/null; then
+    echo -e "${VERDE}✅ Pagamento saudável${NC}"
+else
+    echo -e "${AMARELO}⚠️  Pagamento em atualização... (pode levar alguns instantes)${NC}"
 fi
 
 echo -e "${VERDE}🎉 Deploy do código concluído!${NC}"

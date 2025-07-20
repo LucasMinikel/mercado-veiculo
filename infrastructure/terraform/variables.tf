@@ -38,3 +38,9 @@ variable "veiculo_image" {
   type        = string
   default     = ""
 }
+
+variable "pagamento_image" {
+  description = "Imagem Docker para o serviço pagamento"
+  type        = string
+  default     = ""
+}
