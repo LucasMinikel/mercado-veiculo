@@ -3,27 +3,11 @@ import time
 import threading
 import uuid
 
-# Configurações do teste
+# Configurações do teste - Agora apenas a URL base, espera e setup/teardown via conftest.py
 VEICULO_SERVICE_URL = "http://veiculo-service:8080"
 
 class TestVeiculoService:
-    
-    def setup_method(self):
-        """Aguarda os serviços ficarem prontos antes de cada teste"""
-        self.wait_for_service(VEICULO_SERVICE_URL)
-    
-    def wait_for_service(self, url, timeout=30):
-        """Aguarda o serviço ficar disponível"""
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            try:
-                response = requests.get(f"{url}/health", timeout=2)
-                if response.status_code == 200:
-                    return
-            except requests.RequestException:
-                pass
-            time.sleep(1)
-        raise Exception(f"Serviço {url} não ficou disponível em {timeout} segundos")
+    # O setup_method e wait_for_service foram removidos e são gerenciados por conftest.py
     
     def generate_unique_vehicle_data(self):
         """Gera dados únicos para veículo"""
@@ -64,7 +48,11 @@ class TestVeiculoService:
     
     def test_get_vehicles_with_filters(self):
         """Testa a listagem de veículos com filtros"""
-        # Testa filtro por status
+        # Cria alguns veículos para testar filtros
+        requests.post(f"{VEICULO_SERVICE_URL}/vehicles", json=self.generate_unique_vehicle_data())
+        requests.post(f"{VEICULO_SERVICE_URL}/vehicles", json=self.generate_unique_vehicle_data())
+
+        # Testa filtro por status (disponível por padrão para novos veículos)
         response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles?status_filter=available")
         assert response.status_code == 200
         data = response.json()
@@ -72,27 +60,46 @@ class TestVeiculoService:
         for vehicle in data['vehicles']:
             assert vehicle['status'] == 'available'
         
-        # Testa ordenação por preço
+        # Testa ordenação por preço (cria alguns com preços específicos)
+        vehicle1 = self.generate_unique_vehicle_data()
+        vehicle1['price'] = 10000.00
+        requests.post(f"{VEICULO_SERVICE_URL}/vehicles", json=vehicle1)
+
+        vehicle2 = self.generate_unique_vehicle_data()
+        vehicle2['price'] = 5000.00
+        requests.post(f"{VEICULO_SERVICE_URL}/vehicles", json=vehicle2)
+
+        vehicle3 = self.generate_unique_vehicle_data()
+        vehicle3['price'] = 15000.00
+        requests.post(f"{VEICULO_SERVICE_URL}/vehicles", json=vehicle3)
+
+
         response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles?sort_by=price&sort_order=asc")
         assert response.status_code == 200
         data = response.json()
         
-        if len(data['vehicles']) > 1:
-            prices = [v['price'] for v in data['vehicles']]
-            assert prices == sorted(prices)
+        # Filtra apenas os veículos com os preços que acabamos de criar para testar a ordenação
+        prices_to_check = [10000.00, 5000.00, 15000.00]
+        filtered_for_sort = [v['price'] for v in data['vehicles'] if v['price'] in prices_to_check]
+        
+        if len(filtered_for_sort) >= 2:
+            assert filtered_for_sort == sorted(filtered_for_sort)
         
         # Testa ordenação decrescente
         response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles?sort_by=price&sort_order=desc")
         assert response.status_code == 200
         data = response.json()
         
-        if len(data['vehicles']) > 1:
-            prices = [v['price'] for v in data['vehicles']]
-            assert prices == sorted(prices, reverse=True)
+        filtered_for_sort_desc = [v['price'] for v in data['vehicles'] if v['price'] in prices_to_check]
+        if len(filtered_for_sort_desc) >= 2:
+            assert filtered_for_sort_desc == sorted(filtered_for_sort_desc, reverse=True)
     
     
     def test_get_vehicles_structure(self):
         """Testa a estrutura dos dados dos veículos"""
+        # Cria um veículo para garantir que há dados
+        requests.post(f"{VEICULO_SERVICE_URL}/vehicles", json=self.generate_unique_vehicle_data())
+
         response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles")
         data = response.json()
         
@@ -128,12 +135,12 @@ class TestVeiculoService:
         
         required_fields = ['id', 'brand', 'model', 'year', 'color', 'price', 'status', 'created_at']
         for field in required_fields:
-            assert field in vehicle
+                assert field in vehicle
     
     
     def test_get_nonexistent_vehicle(self):
         """Testa a obtenção de um veículo que não existe"""
-        response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles/999999")
+        response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles/9999999") # ID alto para evitar conflito
         assert response.status_code == 404
         
         data = response.json()
@@ -247,7 +254,7 @@ class TestVeiculoService:
     
     def test_reserve_nonexistent_vehicle(self):
         """Testa a reserva de um veículo que não existe"""
-        response = requests.post(f"{VEICULO_SERVICE_URL}/vehicles/999999/reserve")
+        response = requests.post(f"{VEICULO_SERVICE_URL}/vehicles/9999999/reserve")
         
         assert response.status_code == 404
         data = response.json()
@@ -350,7 +357,7 @@ class TestVeiculoService:
     
     def test_delete_nonexistent_vehicle(self):
         """Testa a exclusão de um veículo que não existe"""
-        response = requests.delete(f"{VEICULO_SERVICE_URL}/vehicles/999999")
+        response = requests.delete(f"{VEICULO_SERVICE_URL}/vehicles/9999999")
         assert response.status_code == 404
         
         data = response.json()

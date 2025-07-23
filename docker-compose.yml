@@ -6,6 +6,7 @@ services:
     environment:
       - DEBUG=1
       - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://user:password@db:5432/main_db
     volumes:
       - ./services/cliente-service:/app
     command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
@@ -15,6 +16,9 @@ services:
       timeout: 10s
       retries: 3
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
 
   veiculo-service:
     build: ./services/veiculo-service
@@ -23,6 +27,7 @@ services:
     environment:
       - DEBUG=1
       - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://user:password@db:5432/main_db
     volumes:
       - ./services/veiculo-service:/app
     command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
@@ -32,6 +37,9 @@ services:
       timeout: 10s
       retries: 3
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
 
   pagamento-service:
     build: ./services/pagamento-service
@@ -40,6 +48,7 @@ services:
     environment:
       - DEBUG=1
       - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://user:password@db:5432/main_db
     volumes:
       - ./services/pagamento-service:/app
     command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
@@ -49,13 +58,38 @@ services:
       timeout: 10s
       retries: 3
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:13-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: main_db
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   tests:
     build: ./tests
     depends_on:
-      - cliente-service
-      - veiculo-service
-      - pagamento-service
+      db:
+        condition: service_healthy
+      cliente-service:
+        condition: service_started
+      veiculo-service:
+        condition: service_started
+      pagamento-service:
+        condition: service_started
     environment:
       - VEICULO_SERVICE_URL=http://veiculo-service:8080
       - CLIENTE_SERVICE_URL=http://cliente-service:8080
@@ -64,3 +98,6 @@ services:
       - ./tests:/app
     profiles:
       - test
+
+volumes:
+  db_data:

@@ -10,31 +10,7 @@ CLIENTE_SERVICE_URL = "http://cliente-service:8080"
 PAGAMENTO_SERVICE_URL = "http://pagamento-service:8080"
 
 class TestIntegration:
-    
-    def setup_method(self):
-        """Aguarda os serviços ficarem prontos antes de cada teste"""
-        self.wait_for_services()
-    
-    def wait_for_services(self, timeout=30):
-        """Aguarda todos os serviços ficarem disponíveis"""
-        services = [
-            VEICULO_SERVICE_URL,
-            CLIENTE_SERVICE_URL,
-            PAGAMENTO_SERVICE_URL
-        ]
-        
-        for service_url in services:
-            start_time = time.time()
-            while time.time() - start_time < timeout:
-                try:
-                    response = requests.get(f"{service_url}/health", timeout=2)
-                    if response.status_code == 200:
-                        break
-                except requests.RequestException:
-                    pass
-                time.sleep(1)
-            else:
-                raise Exception(f"Serviço {service_url} não ficou disponível em {timeout} segundos")
+    # O setup_method e wait_for_services foram removidos e são gerenciados por conftest.py
     
     def generate_unique_document(self):
         """Gera um documento único para evitar conflitos"""
@@ -139,7 +115,7 @@ class TestIntegration:
             headers={'Content-Type': 'application/json'}
         )
         
-        # Se der 409, tenta com outro documento
+        # Se der 409 (conflito por documento ou email), tenta com outro documento
         if response.status_code == 409:
             unique_doc = self.generate_unique_document()
             unique_email = f"integration_{unique_doc}@email.com"
@@ -189,13 +165,13 @@ class TestIntegration:
         response = requests.get(f"{PAGAMENTO_SERVICE_URL}/nonexistent")
         assert response.status_code == 404
         
-        # Testa requisição malformada
+        # Testa requisição malformada (JSON inválido)
         response = requests.post(
             f"{VEICULO_SERVICE_URL}/vehicles",
             data="invalid json",
             headers={'Content-Type': 'application/json'}
         )
-        assert response.status_code == 422  # FastAPI retorna 422 para validation errors
+        assert response.status_code == 422  # FastAPI retorna 422 para validation errors ou JSON malformado
         
         response = requests.post(
             f"{PAGAMENTO_SERVICE_URL}/payment-codes",
@@ -377,7 +353,7 @@ class TestIntegration:
                 payment_id = response.json()['payment_id']
                 break
             elif response.status_code == 400 and "Payment processing failed" in response.json().get('detail', ''):
-                # Gera novo código e tenta novamente
+                # Se falhou por aleatoriedade, gera novo código e tenta novamente
                 response = requests.post(
                     f"{PAGAMENTO_SERVICE_URL}/payment-codes",
                     json=payment_data,
@@ -385,10 +361,13 @@ class TestIntegration:
                 )
                 payment_code = response.json()['payment_code']
                 payment_request["payment_code"] = payment_code
+                time.sleep(0.5) # Pequena pausa antes de re-tentar
             else:
                 break
         
-        # 7. Verifica se o veículo está reservado
+        assert payment_processed, f"Failed to process payment after {max_attempts} attempts: {response.json()}"
+        
+        # 7. Verifica se o veículo está reservado (ainda deve estar após a compra simulada)
         response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}")
         assert response.status_code == 200
         vehicle_status = response.json()
@@ -509,6 +488,7 @@ class TestIntegration:
             
             # Tenta processar (com retry devido ao random)
             max_attempts = 5
+            processed = False
             for _ in range(max_attempts):
                 response = requests.post(
                     f"{PAGAMENTO_SERVICE_URL}/payments",
@@ -518,6 +498,7 @@ class TestIntegration:
                 if response.status_code == 201:
                     payment_data_response = response.json()
                     assert payment_data_response['payment_method'] == method
+                    processed = True
                     break
                 elif response.status_code == 400 and "Payment processing failed" in response.json().get('detail', ''):
                     # Gera novo código e tenta novamente
@@ -528,8 +509,10 @@ class TestIntegration:
                     )
                     payment_code = response.json()['payment_code']
                     payment_request["payment_code"] = payment_code
+                    time.sleep(0.5)
                 else:
                     break
+            assert processed, f"Failed to process payment for method {method} after {max_attempts} attempts: {response.json()}"
     
     
     def test_microservices_resilience(self):
