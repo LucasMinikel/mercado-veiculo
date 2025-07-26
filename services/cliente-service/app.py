@@ -12,7 +12,16 @@ from sqlalchemy.orm import sessionmaker, Session
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@db:5432/main_db")
+DB_HOST = os.getenv("DB_HOST", "db")
+DB_USER = os.getenv("DB_USER", "user")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "password")
+DB_NAME = os.getenv("DB_NAME", "main_db")
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:5432/{DB_NAME}?sslmode=require"
+
+logger.info(f"Connecting to database host: {DB_HOST}")
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

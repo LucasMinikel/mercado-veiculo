@@ -32,3 +32,5 @@ terraform.rc
 # Service account keys
 service-account-key.json
 *-credentials.json
+
+backend-*.hcl
