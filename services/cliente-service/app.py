@@ -27,6 +27,7 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+
 class CustomerDB(Base):
     __tablename__ = "customers"
 
@@ -40,6 +41,7 @@ class CustomerDB(Base):
     status = Column(String)
     created_at = Column(DateTime, default=datetime.now)
 
+
 def get_db():
     db = SessionLocal()
     try:
@@ -47,10 +49,12 @@ def get_db():
     finally:
         db.close()
 
+
 def create_tables():
     logger.info("Creating database tables for Customer Service...")
     Base.metadata.create_all(bind=engine)
     logger.info("Customer Service database tables created.")
+
 
 app = FastAPI(
     title="Customer Service API",
@@ -58,16 +62,21 @@ app = FastAPI(
     version="1.0.0"
 )
 
+
 @app.on_event("startup")
 async def startup_event():
     create_tables()
+
 
 class CustomerCreate(BaseModel):
     name: str = Field(..., min_length=1, description="Nome do cliente")
     email: str = Field(..., description="Email do cliente")
     phone: str = Field(..., description="Telefone do cliente")
-    document: str = Field(..., min_length=11, max_length=11, description="CPF do cliente")
-    credit_limit: Optional[float] = Field(100000.00, ge=0, description="Limite de crédito")
+    document: str = Field(..., min_length=11, max_length=11,
+                          description="CPF do cliente")
+    credit_limit: Optional[float] = Field(
+        100000.00, ge=0, description="Limite de crédito")
+
 
 class CustomerResponse(BaseModel):
     id: int
@@ -80,13 +89,17 @@ class CustomerResponse(BaseModel):
     status: str
     created_at: datetime
 
+
 class CustomersListResponse(BaseModel):
     customers: List[CustomerResponse]
     total: int
     timestamp: datetime
 
+
 class CreditOperation(BaseModel):
-    amount: float = Field(..., gt=0, description="Valor da operação de crédito")
+    amount: float = Field(..., gt=0,
+                          description="Valor da operação de crédito")
+
 
 class CreditOperationResponse(BaseModel):
     message: str
@@ -94,11 +107,13 @@ class CreditOperationResponse(BaseModel):
     amount: float
     available_credit: float
 
+
 class HealthResponse(BaseModel):
     status: str
     service: str
     timestamp: datetime
     version: str
+
 
 @app.get('/health', response_model=HealthResponse, status_code=status.HTTP_200_OK)
 async def health_check(db: Annotated[Session, Depends(get_db)]):
@@ -119,11 +134,12 @@ async def health_check(db: Annotated[Session, Depends(get_db)]):
         version='1.0.0'
     )
 
+
 @app.get('/customers', response_model=CustomersListResponse, status_code=status.HTTP_200_OK)
 async def get_customers(db: Annotated[Session, Depends(get_db)]):
     try:
         db_customers = db.query(CustomerDB).all()
-        
+
         safe_customers = []
         for customer in db_customers:
             customer_dict = customer.__dict__.copy()
@@ -139,15 +155,15 @@ async def get_customers(db: Annotated[Session, Depends(get_db)]):
                 created_at=customer_dict['created_at']
             )
             safe_customers.append(safe_customer)
-        
+
         logger.info(f"Returning {len(safe_customers)} customers from DB")
-        
+
         return CustomersListResponse(
             customers=safe_customers,
             total=len(safe_customers),
             timestamp=datetime.now()
         )
-        
+
     except Exception as e:
         logger.error(f"Error fetching customers from DB: {str(e)}")
         raise HTTPException(
@@ -155,20 +171,21 @@ async def get_customers(db: Annotated[Session, Depends(get_db)]):
             detail="Internal server error"
         )
 
+
 @app.post('/customers', response_model=CustomerResponse, status_code=status.HTTP_201_CREATED)
 async def create_customer(customer_data: CustomerCreate, db: Annotated[Session, Depends(get_db)]):
     try:
         existing_customer = db.query(CustomerDB).filter(
-            (CustomerDB.document == customer_data.document) | 
+            (CustomerDB.document == customer_data.document) |
             (CustomerDB.email == customer_data.email)
         ).first()
-        
+
         if existing_customer:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Customer with this document or email already exists"
             )
-        
+
         new_customer_db = CustomerDB(
             name=customer_data.name,
             email=customer_data.email,
@@ -179,18 +196,18 @@ async def create_customer(customer_data: CustomerCreate, db: Annotated[Session, 
             status='active',
             created_at=datetime.now()
         )
-        
+
         db.add(new_customer_db)
         db.commit()
         db.refresh(new_customer_db)
-        
+
         logger.info(f"Created new customer in DB: {new_customer_db.id}")
-        
+
         safe_customer = new_customer_db.__dict__.copy()
         safe_customer['document'] = '*' * 7 + new_customer_db.document[-4:]
-        
+
         return CustomerResponse(**safe_customer)
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -201,44 +218,47 @@ async def create_customer(customer_data: CustomerCreate, db: Annotated[Session, 
             detail="Internal server error"
         )
 
+
 @app.post('/customers/{customer_id}/credit/reserve', response_model=CreditOperationResponse)
 async def reserve_credit(customer_id: int, credit_data: CreditOperation, db: Annotated[Session, Depends(get_db)]):
     try:
-        customer = db.query(CustomerDB).filter(CustomerDB.id == customer_id).first()
-        
+        customer = db.query(CustomerDB).filter(
+            CustomerDB.id == customer_id).first()
+
         if not customer:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Customer not found"
             )
-            
+
         if customer.status != 'active':
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Customer not active"
             )
-        
+
         if customer.available_credit < credit_data.amount:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Insufficient credit"
             )
-        
+
         customer.available_credit -= credit_data.amount
-        
+
         db.add(customer)
         db.commit()
         db.refresh(customer)
-        
-        logger.info(f"Reserved credit for customer {customer_id} in DB: ${credit_data.amount}")
-        
+
+        logger.info(
+            f"Reserved credit for customer {customer_id} in DB: ${credit_data.amount}")
+
         return CreditOperationResponse(
             message='Credit reserved successfully',
             customer_id=customer_id,
             amount=credit_data.amount,
             available_credit=customer.available_credit
         )
-        
+
     except HTTPException:
         db.rollback()
         raise
@@ -250,32 +270,35 @@ async def reserve_credit(customer_id: int, credit_data: CreditOperation, db: Ann
             detail="Internal server error"
         )
 
+
 @app.post('/customers/{customer_id}/credit/release', response_model=CreditOperationResponse)
 async def release_credit(customer_id: int, credit_data: CreditOperation, db: Annotated[Session, Depends(get_db)]):
     try:
-        customer = db.query(CustomerDB).filter(CustomerDB.id == customer_id).first()
-        
+        customer = db.query(CustomerDB).filter(
+            CustomerDB.id == customer_id).first()
+
         if not customer:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Customer not found"
             )
-        
+
         customer.available_credit += credit_data.amount
-        
+
         db.add(customer)
         db.commit()
         db.refresh(customer)
-        
-        logger.info(f"Released credit for customer {customer_id} in DB: ${credit_data.amount}")
-        
+
+        logger.info(
+            f"Released credit for customer {customer_id} in DB: ${credit_data.amount}")
+
         return CreditOperationResponse(
             message='Credit released successfully',
             customer_id=customer_id,
             amount=credit_data.amount,
             available_credit=customer.available_credit
         )
-        
+
     except HTTPException:
         db.rollback()
         raise
@@ -288,10 +311,10 @@ async def release_credit(customer_id: int, credit_data: CreditOperation, db: Ann
         )
 
 if __name__ == '__main__':
-    create_tables() 
+    create_tables()
     port = int(os.environ.get('PORT', 8080))
     debug_mode = os.environ.get('DEBUG', '1') == '1'
-    
+
     uvicorn.run(
         "app:app",
         host='0.0.0.0',
