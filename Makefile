@@ -1,4 +1,4 @@
-.PHONY: help setup setup-backend deploy deploy-sql deploy-app destroy destroy-sql destroy-app health dev test stop clean info build up down
+.PHONY: help setup setup-backend deploy deploy-sql deploy-app destroy destroy-sql destroy-app dev test stop clean info build up down
 
 # ==============================================================================
 # Variáveis de configuração
@@ -66,17 +66,6 @@ destroy-app: ## Destroi apenas aplicações
 		-var="region=$(REGION)" \
 		-var="environment=$(ENVIRONMENT)" \
 		-var="use_real_images=false"
-
-health: ## Verifica saúde dos serviços
-	@cd infrastructure/terraform && \
-	for service in cliente-service veiculo-service pagamento-service; do \
-		url=$$(terraform output -json service_urls | jq -r ".$$service" 2>/dev/null || echo ""); \
-		if [ -n "$$url" ]; then \
-			curl -fsS "$$url/health" && echo "✅ $$service OK" || echo "❌ $$service com problema"; \
-		else \
-			echo "❌ $$service não deployado"; \
-		fi; \
-	done
 
 # ==============================================================================
 # Desenvolvimento local
