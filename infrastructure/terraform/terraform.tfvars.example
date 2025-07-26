@@ -2,3 +2,4 @@ project_id   = "your-gcp-project-id"
 project_name = "microservices-saga"
 region       = "southamerica-east1"
 environment  = "dev"
+

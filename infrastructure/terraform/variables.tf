@@ -1,46 +1,53 @@
 variable "project_id" {
-  description = "ID do projeto no Google Cloud"
-  type        = string
+  type = string
 }
 
 variable "project_name" {
-  description = "Nome do projeto para nomear recursos"
-  type        = string
-  default     = "microservices-saga"
+  type    = string
+  default = "microservices-saga"
 }
 
 variable "region" {
-  description = "Região do Google Cloud"
-  type        = string
-  default     = "southamerica-east1"
+  type    = string
+  default = "southamerica-east1"
 }
 
 variable "environment" {
-  description = "Ambiente (dev, staging, prod)"
-  type        = string
-  default     = "dev"
+  type    = string
+  default = "dev"
 }
 
 variable "use_real_images" {
-  description = "Indica se deve usar imagens reais do Docker ou placeholders"
-  type        = bool
-  default     = false
+  type    = bool
+  default = false
 }
 
 variable "cliente_image" {
-  description = "Imagem Docker para o serviço cliente"
-  type        = string
-  default     = ""
+  type    = string
+  default = ""
 }
 
 variable "veiculo_image" {
-  description = "Imagem Docker para o serviço veículo"
-  type        = string
-  default     = ""
+  type    = string
+  default = ""
 }
 
 variable "pagamento_image" {
-  description = "Imagem Docker para o serviço pagamento"
-  type        = string
-  default     = ""
+  type    = string
+  default = ""
+}
+
+variable "db_name" {
+  type    = string
+  default = "main_db"
+}
+
+variable "db_user" {
+  type    = string
+  default = "user"
+}
+
+variable "db_password" {
+  type      = string
+  sensitive = true
 }
