@@ -31,6 +31,76 @@ resource "google_secret_manager_secret_iam_member" "db_password_access" {
   member    = "serviceAccount:${google_service_account.cloud_run.email}"
 }
 
+locals {
+  pubsub_topics_map = {
+    "commands.credit.reserve"               = null
+    "commands.credit.release"               = null
+    "commands.vehicle.reserve"              = null
+    "commands.vehicle.release"              = null
+    "commands.payment.generate_code"        = null
+    "commands.payment.process"              = null
+    "commands.payment.refund"               = null
+    "events.credit.reserved"                = null
+    "events.credit.reservation_failed"      = null
+    "events.credit.released"                = null
+    "events.vehicle.reserved"               = null
+    "events.vehicle.reservation_failed"     = null
+    "events.vehicle.released"               = null
+    "events.payment.code_generated"         = null
+    "events.payment.code_generation_failed" = null
+    "events.payment.processed"              = null
+    "events.payment.failed"                 = null
+    "events.payment.refunded"               = null
+    "events.payment.refund_failed"          = null
+  }
+
+  pubsub_subscriptions_map = {
+    "cliente-service-reserve-credit-sub"              = "commands.credit.reserve"
+    "cliente-service-release-credit-sub"              = "commands.credit.release"
+    "veiculo-service-reserve-vehicle-sub"             = "commands.vehicle.reserve"
+    "veiculo-service-release-vehicle-sub"             = "commands.vehicle.release"
+    "pagamento-service-generate-code-sub"             = "commands.payment.generate_code"
+    "pagamento-service-process-payment-sub"           = "commands.payment.process"
+    "pagamento-service-refund-payment-sub"            = "commands.payment.refund"
+    "orquestrador-credit-reserved-sub"                = "events.credit.reserved"
+    "orquestrador-credit-reservation-failed-sub"      = "events.credit.reservation_failed"
+    "orquestrador-credit-released-sub"                = "events.credit.released"
+    "orquestrador-vehicle-reserved-sub"               = "events.vehicle.reserved"
+    "orquestrador-vehicle-reservation-failed-sub"     = "events.vehicle.reservation_failed"
+    "orquestrador-vehicle-released-sub"               = "events.vehicle.released"
+    "orquestrador-payment-code-generated-sub"         = "events.payment.code_generated"
+    "orquestrador-payment-code-generation-failed-sub" = "events.payment.code_generation_failed"
+    "orquestrador-payment-processed-sub"              = "events.payment.processed"
+    "orquestrador-payment-failed-sub"                 = "events.payment.failed"
+    "orquestrador-payment-refunded-sub"               = "events.payment.refunded"
+    "orquestrador-payment-refund-failed-sub"          = "events.payment.refund_failed"
+  }
+}
+
+resource "google_pubsub_topic" "topics" {
+  for_each = local.pubsub_topics_map
+  name     = each.key
+  project  = var.project_id
+}
+
+resource "google_pubsub_subscription" "subscriptions" {
+  for_each             = local.pubsub_subscriptions_map
+  name                 = each.key
+  topic                = google_pubsub_topic.topics[each.value].id
+  ack_deadline_seconds = 10
+  project              = var.project_id
+}
+
+resource "google_project_iam_member" "cloud_run_pubsub_editor" {
+  project = var.project_id
+  role    = "roles/pubsub.editor"
+  member  = "serviceAccount:${google_service_account.cloud_run.email}"
+  depends_on = [
+    google_pubsub_topic.topics,
+    google_pubsub_subscription.subscriptions
+  ]
+}
+
 resource "google_cloud_run_v2_service" "services" {
   for_each = var.services
   name     = each.key
@@ -66,6 +136,10 @@ resource "google_cloud_run_v2_service" "services" {
       env {
         name  = "DATABASE_URL"
         value = ""
+      }
+      env {
+        name  = "PROJECT_ID"
+        value = var.project_id
       }
       env {
         name = "DB_PASSWORD"
