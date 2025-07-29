@@ -139,6 +139,8 @@ services:
       - ORQUESTRADOR_SERVICE_URL=http://orquestrador:8080
       - PROJECT_ID=saga-project
       - PUBSUB_EMULATOR_HOST=pubsub-emulator:8085
+    volumes:
+      - ./tests:/app
     profiles:
       - test
 
