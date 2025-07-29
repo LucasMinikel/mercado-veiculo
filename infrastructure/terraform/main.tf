@@ -22,6 +22,7 @@ locals {
     cliente-service   = { image = var.use_real_images ? var.cliente_image : "gcr.io/cloudrun/hello" }
     veiculo-service   = { image = var.use_real_images ? var.veiculo_image : "gcr.io/cloudrun/hello" }
     pagamento-service = { image = var.use_real_images ? var.pagamento_image : "gcr.io/cloudrun/hello" }
+    orquestrador      = { image = var.use_real_images ? var.orquestrador_image : "gcr.io/cloudrun/hello" }
   }
 }
 

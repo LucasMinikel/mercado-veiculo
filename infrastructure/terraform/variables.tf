@@ -37,6 +37,11 @@ variable "pagamento_image" {
   default = ""
 }
 
+variable "orquestrador_image" {
+  type    = string
+  default = ""
+}
+
 variable "db_name" {
   type    = string
   default = "main_db"
@@ -50,4 +55,8 @@ variable "db_user" {
 variable "db_password" {
   type      = string
   sensitive = true
+}
+
+variable "state_bucket_name" {
+  type = string
 }

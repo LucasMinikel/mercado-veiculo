@@ -1,13 +1,22 @@
-from fastapi import FastAPI, HTTPException, status, Query, Depends
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException, status, Depends
+from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional, Annotated
 import os
 import logging
 from datetime import datetime
 import uvicorn
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, text
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, text, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.exc import IntegrityError
+
+from google.cloud import pubsub_v1
+import json
+import asyncio
+from shared.models import (
+    ReserveVehicleCommand, ReleaseVehicleCommand,
+    VehicleReservedEvent, VehicleReservationFailedEvent, VehicleReleasedEvent
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -21,25 +30,83 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:5432/{DB_NAME}?sslmode=require"
 
-logger.info(f"Connecting to database at host: {DB_HOST} (database: {DB_NAME})")
+logger.info(f"Connecting to database host: {DB_HOST}")
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+PROJECT_ID = os.getenv("PROJECT_ID", "saga-project")
+PUBSUB_EMULATOR_HOST = os.getenv("PUBSUB_EMULATOR_HOST")
+
+if PUBSUB_EMULATOR_HOST:
+    os.environ["PUBSUB_EMULATOR_HOST"] = PUBSUB_EMULATOR_HOST
+    logger.info(f"Using Pub/Sub emulator at {PUBSUB_EMULATOR_HOST}")
+else:
+    logger.info("Using Google Cloud Pub/Sub service (not emulator).")
+
+publisher = pubsub_v1.PublisherClient()
+subscriber = pubsub_v1.SubscriberClient()
+
+RESERVE_VEHICLE_COMMAND_TOPIC = f"projects/{PROJECT_ID}/topics/commands.vehicle.reserve"
+RELEASE_VEHICLE_COMMAND_TOPIC = f"projects/{PROJECT_ID}/topics/commands.vehicle.release"
+
+RESERVE_VEHICLE_SUBSCRIPTION = f"projects/{PROJECT_ID}/subscriptions/veiculo-service-reserve-vehicle-sub"
+RELEASE_VEHICLE_SUBSCRIPTION = f"projects/{PROJECT_ID}/subscriptions/veiculo-service-release-vehicle-sub"
+
+VEHICLE_RESERVED_EVENT_TOPIC = f"projects/{PROJECT_ID}/topics/events.vehicle.reserved"
+VEHICLE_RESERVATION_FAILED_EVENT_TOPIC = f"projects/{PROJECT_ID}/topics/events.vehicle.reservation_failed"
+VEHICLE_RELEASED_EVENT_TOPIC = f"projects/{PROJECT_ID}/topics/events.vehicle.released"
+
 
 class VehicleDB(Base):
     __tablename__ = "vehicles"
-
     id = Column(Integer, primary_key=True, index=True)
     brand = Column(String, index=True)
     model = Column(String, index=True)
     year = Column(Integer)
     color = Column(String)
     price = Column(Float)
-    status = Column(String, default="available")
+    license_plate = Column(String, unique=True, index=True)
+    is_reserved = Column(Boolean, default=False)
+    is_sold = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.now)
-    reserved_at = Column(DateTime, nullable=True)
+
+
+class VehicleCreate(BaseModel):
+    brand: str = Field(..., min_length=2, max_length=50)
+    model: str = Field(..., min_length=2, max_length=50)
+    year: int = Field(..., ge=1900, le=datetime.now().year + 1)
+    color: str = Field(..., min_length=3, max_length=30)
+    price: float = Field(..., gt=0)
+    license_plate: str = Field(..., min_length=7, max_length=10)
+
+
+class VehicleResponse(BaseModel):
+    id: int
+    brand: str
+    model: str
+    year: int
+    color: str
+    price: float
+    license_plate: str
+    is_reserved: bool
+    is_sold: bool
+    created_at: datetime
+
+    @classmethod
+    def from_orm_masked_license_plate(cls, obj: VehicleDB):
+        obj_dict = obj.__dict__.copy()
+        if obj_dict.get('license_plate'):
+            lp = obj_dict['license_plate']
+            obj_dict['license_plate'] = '*' * (len(lp) - 3) + lp[-3:]
+        return cls(**obj_dict)
+
+
+class VehiclesResponse(BaseModel):
+    vehicles: List[VehicleResponse]
+    total: int
+    timestamp: datetime
 
 
 def get_db():
@@ -66,38 +133,12 @@ app = FastAPI(
 @app.on_event("startup")
 async def startup_event():
     create_tables()
+    asyncio.create_task(subscribe_to_vehicle_commands())
 
 
-class VehicleCreate(BaseModel):
-    brand: str = Field(..., min_length=1, description="Marca do veículo")
-    model: str = Field(..., min_length=1, description="Modelo do veículo")
-    year: int = Field(..., ge=1900, le=2030, description="Ano do veículo")
-    color: str = Field(..., min_length=1, description="Cor do veículo")
-    price: float = Field(..., gt=0, description="Preço do veículo")
-
-
-class VehicleResponse(BaseModel):
-    id: int
-    brand: str
-    model: str
-    year: int
-    color: str
-    price: float
-    status: str
-    created_at: datetime
-    reserved_at: Optional[datetime] = None
-
-
-class VehiclesListResponse(BaseModel):
-    vehicles: List[VehicleResponse]
-    total: int
-    timestamp: datetime
-
-
-class VehicleReservationResponse(BaseModel):
-    message: str
-    vehicle_id: int
-    status: str
+@app.on_event("shutdown")
+async def shutdown_event():
+    subscriber.close()
 
 
 class HealthResponse(BaseModel):
@@ -127,245 +168,236 @@ async def health_check(db: Annotated[Session, Depends(get_db)]):
     )
 
 
-@app.get('/vehicles', response_model=VehiclesListResponse, status_code=status.HTTP_200_OK)
-async def get_vehicles(
-    db: Annotated[Session, Depends(get_db)],
-    status_filter: Optional[str] = Query(
-        "available",
-        description="Filtrar veículos por status (available, reserved, sold)"
-    ),
-    sort_by: Optional[str] = Query(
-        "price",
-        description="Ordenar por campo (price, year, brand, model)"
-    ),
-    sort_order: Optional[str] = Query(
-        "asc",
-        description="Ordem de classificação (asc, desc)"
+async def publish_event(topic_path: str, event_data: BaseModel, transaction_id: str):
+    try:
+        data = event_data.model_dump_json().encode("utf-8")
+        future = publisher.publish(
+            topic_path, data, transaction_id=transaction_id)
+        await asyncio.wrap_future(future)
+        logger.info(
+            f"Published to {topic_path}: {event_data.model_dump_json()}")
+    except Exception as e:
+        logger.error(f"Error publishing to {topic_path}: {e}")
+
+
+async def handle_reserve_vehicle_command(message):
+    db = SessionLocal()
+    try:
+        command = ReserveVehicleCommand.model_validate_json(message.data)
+        logger.info(
+            f"Received ReserveVehicleCommand: {command.model_dump_json()}")
+
+        vehicle = db.query(VehicleDB).filter(
+            VehicleDB.id == command.vehicle_id).first()
+
+        if not vehicle:
+            await publish_event(
+                VEHICLE_RESERVATION_FAILED_EVENT_TOPIC,
+                VehicleReservationFailedEvent(
+                    transaction_id=command.transaction_id,
+                    vehicle_id=command.vehicle_id,
+                    reason="Vehicle not found"
+                ),
+                command.transaction_id
+            )
+            message.ack()
+            return
+
+        if vehicle.is_reserved or vehicle.is_sold:
+            await publish_event(
+                VEHICLE_RESERVATION_FAILED_EVENT_TOPIC,
+                VehicleReservationFailedEvent(
+                    transaction_id=command.transaction_id,
+                    vehicle_id=command.vehicle_id,
+                    reason="Vehicle already reserved or sold"
+                ),
+                command.transaction_id
+            )
+            message.ack()
+            return
+
+        vehicle.is_reserved = True
+        db.add(vehicle)
+        db.commit()
+        db.refresh(vehicle)
+
+        await publish_event(
+            VEHICLE_RESERVED_EVENT_TOPIC,
+            VehicleReservedEvent(
+                transaction_id=command.transaction_id,
+                vehicle_id=vehicle.id
+            ),
+            command.transaction_id
+        )
+        logger.info(f"Vehicle {vehicle.id} reserved.")
+        message.ack()
+
+    except ValidationError as e:
+        logger.error(
+            f"Validation error for ReserveVehicleCommand: {e} - Data: {message.data}")
+        message.ack()
+    except Exception as e:
+        logger.error(f"Error processing ReserveVehicleCommand: {e}")
+        db.rollback()
+        message.ack()
+    finally:
+        db.close()
+
+
+async def handle_release_vehicle_command(message):
+    db = SessionLocal()
+    try:
+        command = ReleaseVehicleCommand.model_validate_json(message.data)
+        logger.info(
+            f"Received ReleaseVehicleCommand: {command.model_dump_json()}")
+
+        vehicle = db.query(VehicleDB).filter(
+            VehicleDB.id == command.vehicle_id).first()
+
+        if not vehicle:
+            logger.warning(
+                f"Attempted to release non-existent vehicle {command.vehicle_id}")
+            message.ack()
+            return
+
+        if vehicle.is_reserved and not vehicle.is_sold:
+            vehicle.is_reserved = False
+            db.add(vehicle)
+            db.commit()
+            db.refresh(vehicle)
+            logger.info(f"Vehicle {vehicle.id} released.")
+        else:
+            logger.info(
+                f"Vehicle {vehicle.id} not reserved or already sold, no action needed for release.")
+
+        await publish_event(
+            VEHICLE_RELEASED_EVENT_TOPIC,
+            VehicleReleasedEvent(
+                transaction_id=command.transaction_id,
+                vehicle_id=vehicle.id
+            ),
+            command.transaction_id
+        )
+        message.ack()
+
+    except ValidationError as e:
+        logger.error(
+            f"Validation error for ReleaseVehicleCommand: {e} - Data: {message.data}")
+        message.ack()
+    except Exception as e:
+        logger.error(f"Error processing ReleaseVehicleCommand: {e}")
+        db.rollback()
+        message.ack()
+    finally:
+        db.close()
+
+
+async def subscribe_to_vehicle_commands():
+    loop = asyncio.get_event_loop()
+
+    try:
+        publisher.create_topic(request={"name": RESERVE_VEHICLE_COMMAND_TOPIC})
+        logger.info(f"Topic {RESERVE_VEHICLE_COMMAND_TOPIC} ensured.")
+    except Exception as e:
+        if "Resource already exists" not in str(e):
+            logger.error(
+                f"Error creating topic {RESERVE_VEHICLE_COMMAND_TOPIC}: {e}")
+    try:
+        subscriber.create_subscription(request={
+                                       "name": RESERVE_VEHICLE_SUBSCRIPTION, "topic": RESERVE_VEHICLE_COMMAND_TOPIC})
+        logger.info(f"Subscription {RESERVE_VEHICLE_SUBSCRIPTION} ensured.")
+    except Exception as e:
+        if "Resource already exists" not in str(e):
+            logger.error(
+                f"Error creating subscription {RESERVE_VEHICLE_SUBSCRIPTION}: {e}")
+
+    try:
+        publisher.create_topic(request={"name": RELEASE_VEHICLE_COMMAND_TOPIC})
+        logger.info(f"Topic {RELEASE_VEHICLE_COMMAND_TOPIC} ensured.")
+    except Exception as e:
+        if "Resource already exists" not in str(e):
+            logger.error(
+                f"Error creating topic {RELEASE_VEHICLE_COMMAND_TOPIC}: {e}")
+    try:
+        subscriber.create_subscription(request={
+                                       "name": RELEASE_VEHICLE_SUBSCRIPTION, "topic": RELEASE_VEHICLE_COMMAND_TOPIC})
+        logger.info(f"Subscription {RELEASE_VEHICLE_SUBSCRIPTION} ensured.")
+    except Exception as e:
+        if "Resource already exists" not in str(e):
+            logger.error(
+                f"Error creating subscription {RELEASE_VEHICLE_SUBSCRIPTION}: {e}")
+
+    logger.info(f"Listening for messages on {RESERVE_VEHICLE_SUBSCRIPTION}")
+    streaming_pull_future_reserve = subscriber.subscribe(
+        RESERVE_VEHICLE_SUBSCRIPTION,
+        callback=lambda message: loop.create_task(
+            handle_reserve_vehicle_command(message))
     )
-):
+
+    logger.info(f"Listening for messages on {RELEASE_VEHICLE_SUBSCRIPTION}")
+    streaming_pull_future_release = subscriber.subscribe(
+        RELEASE_VEHICLE_SUBSCRIPTION,
+        callback=lambda message: loop.create_task(
+            handle_release_vehicle_command(message))
+    )
+
+
+@app.post("/vehicles", response_model=VehicleResponse, status_code=status.HTTP_201_CREATED)
+async def create_vehicle(vehicle: VehicleCreate, db: Annotated[Session, Depends(get_db)]):
     try:
-        query = db.query(VehicleDB)
-
-        if status_filter:
-            query = query.filter(VehicleDB.status == status_filter)
-
-        sort_column = None
-        if sort_by == 'price':
-            sort_column = VehicleDB.price
-        elif sort_by == 'year':
-            sort_column = VehicleDB.year
-        elif sort_by == 'brand':
-            sort_column = VehicleDB.brand
-        elif sort_by == 'model':
-            sort_column = VehicleDB.model
-
-        if sort_column:
-            if sort_order.lower() == 'desc':
-                query = query.order_by(sort_column.desc())
-            else:
-                query = query.order_by(sort_column.asc())
-
-        db_vehicles = query.all()
-
-        vehicle_responses = [VehicleResponse(
-            **vehicle.__dict__) for vehicle in db_vehicles]
-
-        logger.info(
-            f"Returning {len(vehicle_responses)} vehicles with status '{status_filter}' from DB")
-
-        return VehiclesListResponse(
-            vehicles=vehicle_responses,
-            total=len(vehicle_responses),
-            timestamp=datetime.now()
-        )
-
-    except Exception as e:
-        logger.error(f"Error fetching vehicles from DB: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
-        )
-
-
-@app.post('/vehicles', response_model=VehicleResponse, status_code=status.HTTP_201_CREATED)
-async def create_vehicle(vehicle_data: VehicleCreate, db: Annotated[Session, Depends(get_db)]):
-    try:
-        new_vehicle_db = VehicleDB(
-            brand=vehicle_data.brand,
-            model=vehicle_data.model,
-            year=vehicle_data.year,
-            color=vehicle_data.color,
-            price=vehicle_data.price,
-            status='available',
-            created_at=datetime.now()
-        )
-
-        db.add(new_vehicle_db)
+        db_vehicle = VehicleDB(**vehicle.model_dump())
+        db.add(db_vehicle)
         db.commit()
-        db.refresh(new_vehicle_db)
-
-        logger.info(
-            f"Created new vehicle in DB: {new_vehicle_db.id} - {new_vehicle_db.brand} {new_vehicle_db.model}")
-
-        return VehicleResponse(**new_vehicle_db.__dict__)
-
-    except Exception as e:
+        db.refresh(db_vehicle)
+        return VehicleResponse.from_orm_masked_license_plate(db_vehicle)
+    except IntegrityError:
         db.rollback()
-        logger.error(f"Error creating vehicle in DB: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Vehicle with this license plate already exists"
+        )
+    except Exception as e:
+        logger.error(f"Error creating vehicle: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error"
         )
 
 
-@app.get('/vehicles/{vehicle_id}', response_model=VehicleResponse, status_code=status.HTTP_200_OK)
+@app.get("/vehicles", response_model=VehiclesResponse)
+async def get_vehicles(db: Annotated[Session, Depends(get_db)]):
+    vehicles = db.query(VehicleDB).all()
+    vehicles_masked = [
+        VehicleResponse.from_orm_masked_license_plate(v) for v in vehicles]
+    return VehiclesResponse(vehicles=vehicles_masked, total=len(vehicles), timestamp=datetime.now())
+
+
+@app.get("/vehicles/{vehicle_id}", response_model=VehicleResponse)
 async def get_vehicle(vehicle_id: int, db: Annotated[Session, Depends(get_db)]):
-    try:
-        vehicle = db.query(VehicleDB).filter(
-            VehicleDB.id == vehicle_id).first()
-
-        if not vehicle:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Vehicle not found"
-            )
-
-        logger.info(f"Returning vehicle details for ID: {vehicle_id} from DB")
-        return VehicleResponse(**vehicle.__dict__)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching vehicle {vehicle_id} from DB: {str(e)}")
+    vehicle = db.query(VehicleDB).filter(VehicleDB.id == vehicle_id).first()
+    if not vehicle:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
-        )
+            status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
+    return VehicleResponse.from_orm_masked_license_plate(vehicle)
 
 
-@app.post('/vehicles/{vehicle_id}/reserve', response_model=VehicleReservationResponse)
-async def reserve_vehicle(vehicle_id: int, db: Annotated[Session, Depends(get_db)]):
-    try:
-        vehicle = db.query(VehicleDB).filter(
-            VehicleDB.id == vehicle_id).first()
-
-        if not vehicle:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Vehicle not found"
-            )
-
-        if vehicle.status != 'available':
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Vehicle not available for reservation"
-            )
-
-        vehicle.status = 'reserved'
-        vehicle.reserved_at = datetime.now()
-
-        db.add(vehicle)
-        db.commit()
-        db.refresh(vehicle)
-
-        logger.info(
-            f"Reserved vehicle in DB: {vehicle_id} - {vehicle.brand} {vehicle.model}")
-
-        return VehicleReservationResponse(
-            message='Vehicle reserved successfully',
-            vehicle_id=vehicle_id,
-            status='reserved'
-        )
-
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error reserving vehicle in DB: {str(e)}")
+@app.patch("/vehicles/{vehicle_id}/mark_as_sold", response_model=VehicleResponse)
+async def mark_vehicle_as_sold(vehicle_id: int, db: Annotated[Session, Depends(get_db)]):
+    vehicle = db.query(VehicleDB).filter(VehicleDB.id == vehicle_id).first()
+    if not vehicle:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
-        )
+            status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
 
+    vehicle.is_sold = True
+    vehicle.is_reserved = False
+    db.add(vehicle)
+    db.commit()
+    db.refresh(vehicle)
 
-@app.post('/vehicles/{vehicle_id}/release', response_model=VehicleReservationResponse)
-async def release_vehicle(vehicle_id: int, db: Annotated[Session, Depends(get_db)]):
-    try:
-        vehicle = db.query(VehicleDB).filter(
-            VehicleDB.id == vehicle_id).first()
-
-        if not vehicle:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Vehicle not found"
-            )
-
-        if vehicle.status != 'reserved':
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Vehicle is not reserved"
-            )
-
-        vehicle.status = 'available'
-        vehicle.reserved_at = None
-
-        db.add(vehicle)
-        db.commit()
-        db.refresh(vehicle)
-
-        logger.info(
-            f"Released vehicle in DB: {vehicle_id} - {vehicle.brand} {vehicle.model}")
-
-        return VehicleReservationResponse(
-            message='Vehicle released successfully',
-            vehicle_id=vehicle_id,
-            status='available'
-        )
-
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error releasing vehicle in DB: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
-        )
-
-
-@app.delete('/vehicles/{vehicle_id}', status_code=status.HTTP_204_NO_CONTENT)
-async def delete_vehicle(vehicle_id: int, db: Annotated[Session, Depends(get_db)]):
-    try:
-        vehicle = db.query(VehicleDB).filter(
-            VehicleDB.id == vehicle_id).first()
-
-        if not vehicle:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Vehicle not found"
-            )
-
-        db.delete(vehicle)
-        db.commit()
-
-        logger.info(
-            f"Deleted vehicle from DB: {vehicle_id} - {vehicle.brand} {vehicle.model}")
-
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error deleting vehicle from DB: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
-        )
+    logger.info(f"Vehicle {vehicle_id} marked as sold.")
+    return VehicleResponse.from_orm_masked_license_plate(vehicle)
 
 if __name__ == '__main__':
-    create_tables()
     port = int(os.environ.get('PORT', 8080))
     debug_mode = os.environ.get('DEBUG', '1') == '1'
 

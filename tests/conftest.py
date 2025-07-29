@@ -1,93 +1,120 @@
+# ./tests/conftest.py
 import pytest
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker, declarative_base
-
+import httpx
 import os
-import time
-import requests
-import warnings
+import random
+import asyncio
+from typing import Dict, Any
 
-Base = declarative_base()
+# URLs dos serviços
+CLIENTE_SERVICE_URL = os.getenv(
+    "CLIENTE_SERVICE_URL", "http://cliente-service:8080")
+VEICULO_SERVICE_URL = os.getenv(
+    "VEICULO_SERVICE_URL", "http://veiculo-service:8080")
+PAGAMENTO_SERVICE_URL = os.getenv(
+    "PAGAMENTO_SERVICE_URL", "http://pagamento-service:8080")
+ORQUESTRADOR_SERVICE_URL = os.getenv(
+    "ORQUESTRADOR_SERVICE_URL", "http://orquestrador:8080")
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql://user:password@db:5432/main_db")
-engine = create_engine(DATABASE_URL)
-TestingSessionLocal = sessionmaker(
-    autocommit=False, autoflush=False, bind=engine)
+# Timeout padrão para requisições
+DEFAULT_TIMEOUT = 30.0
 
 
-@pytest.fixture(scope="session", autouse=True)
-def wait_for_services():
-    service_urls = {
-        "cliente-service": "http://cliente-service:8080/health",
-        "veiculo-service": "http://veiculo-service:8080/health",
-        "pagamento-service": "http://pagamento-service:8080/health",
+@pytest.fixture
+def sample_customer():
+    """Gera dados de cliente únicos para cada teste."""
+    rand_num = random.randint(10000, 99999)
+    return {
+        "name": f"João Silva {rand_num}",
+        "email": f"joao{rand_num}@email.com",
+        "phone": f"11999{rand_num:05d}",
+        "document": f"{rand_num:011d}",
+        "credit_limit": 50000.0
     }
 
-    db_health_check_passed = False
-    start_time = time.time()
-    print("\nWaiting for DB to be healthy...")
-    while time.time() - start_time < 60:
+
+@pytest.fixture
+def sample_vehicle():
+    """Gera dados de veículo únicos para cada teste."""
+    rand_num = random.randint(1000, 9999)
+    return {
+        "brand": "Toyota",
+        "model": "Corolla",
+        "year": 2023,
+        "color": "Branco",
+        "price": 45000.0,
+        "license_plate": f"ABC{rand_num}"
+    }
+
+
+@pytest.fixture
+def low_credit_customer():
+    """Cliente com crédito insuficiente para testes de falha."""
+    rand_num = random.randint(10000, 99999)
+    return {
+        "name": f"Maria Pobre {rand_num}",
+        "email": f"maria{rand_num}@email.com",
+        "phone": f"11888{rand_num:05d}",
+        "document": f"{rand_num:011d}",
+        "credit_limit": 1000.0  # Crédito baixo
+    }
+
+
+async def wait_for_saga_completion(http_client, transaction_id: str, timeout: int = 60) -> Dict[str, Any]:
+    """Aguarda a conclusão de uma SAGA e retorna o estado final."""
+    for _ in range(timeout):
         try:
-            temp_engine = create_engine(DATABASE_URL)
-            with temp_engine.connect() as connection:
-                connection.execute(text("SELECT 1"))
-            print("DB is healthy.")
-            db_health_check_passed = True
-            break
-        except Exception as e:
-            print(f"DB not ready yet: {e}")
-            time.sleep(2)
+            response = await http_client.get(f"{ORQUESTRADOR_SERVICE_URL}/saga-states/{transaction_id}")
+            if response.status_code == 200:
+                saga = response.json()
+                status = saga["status"]
+                if status in ["COMPLETED", "FAILED", "FAILED_COMPENSATED", "FAILED_REQUIRES_MANUAL_INTERVENTION"]:
+                    return saga
+        except Exception:
+            pass
+        await asyncio.sleep(1)
 
-    if not db_health_check_passed:
-        pytest.fail("Database did not become healthy in time.")
-
-    for service_name, url in service_urls.items():
-        print(f"Waiting for {service_name} at {url}...")
-        start_time = time.time()
-        while time.time() - start_time < 90:
-            try:
-                response = requests.get(url, timeout=5)
-                if response.status_code == 200 and response.json().get('status') == 'healthy':
-                    print(f"{service_name} is healthy.")
-                    break
-            except requests.exceptions.ConnectionError:
-                pass
-            except requests.exceptions.Timeout:
-                pass
-            time.sleep(2)
-        else:
-            pytest.fail(f"{service_name} did not become healthy in time.")
-
-    yield
+    pytest.fail(
+        f"SAGA {transaction_id} não foi concluída em {timeout} segundos")
 
 
-@pytest.fixture(scope="function", autouse=True)
-def setup_teardown_db():
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        Base.metadata.create_all(bind=engine)
+async def create_test_customer(customer_data):
+    """Função helper para criar cliente."""
+    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        response = await client.post(f"{CLIENTE_SERVICE_URL}/customers", json=customer_data)
+        assert response.status_code == 201
+        return response.json()
 
-    with TestingSessionLocal() as session:
-        print("\nCleaning database before test function...")
 
-        tables_to_clear = ["customers", "vehicles",
-                           "payment_codes", "payments"]
-        allowed_tables = set(tables_to_clear)
-        for table_name in tables_to_clear:
-            try:
-                if table_name in allowed_tables:
-                    session.execute(
-                        text(f'TRUNCATE TABLE "{table_name}" RESTART IDENTITY CASCADE;'))
-                    print(f"Table {table_name} truncated.")
-                else:
-                    print(
-                        f"Table {table_name} is not allowed to be truncated.")
-            except Exception as e:
-                print(f"Could not truncate table {table_name}: {e}")
-                session.rollback()
+async def create_test_vehicle(vehicle_data):
+    """Função helper para criar veículo."""
+    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        response = await client.post(f"{VEICULO_SERVICE_URL}/vehicles", json=vehicle_data)
+        assert response.status_code == 201
+        return response.json()
 
-        session.commit()
-        print("Database cleanup for test function completed.")
 
-    yield
+async def check_services_health():
+    """Função helper para verificar saúde dos serviços."""
+    services = {
+        "cliente": f"{CLIENTE_SERVICE_URL}/health",
+        "veiculo": f"{VEICULO_SERVICE_URL}/health",
+        "pagamento": f"{PAGAMENTO_SERVICE_URL}/health",
+        "orquestrador": f"{ORQUESTRADOR_SERVICE_URL}/health"
+    }
+
+    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        for name, url in services.items():
+            for attempt in range(10):
+                try:
+                    response = await client.get(url)
+                    if response.status_code == 200:
+                        health = response.json()
+                        assert health["status"] == "healthy", f"Serviço {name} não está saudável"
+                        break
+                except Exception as e:
+                    if attempt == 9:
+                        pytest.fail(
+                            f"Serviço {name} não ficou disponível: {e}")
+                    await asyncio.sleep(1)
+    return True
