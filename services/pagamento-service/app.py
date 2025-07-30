@@ -1,3 +1,4 @@
+# ./services/pagamento-service/app.py
 from fastapi import FastAPI, HTTPException, status, Depends
 from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional, Annotated
@@ -5,11 +6,12 @@ import os
 import logging
 from datetime import datetime, timedelta
 import uvicorn
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, text, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import IntegrityError
 import uuid
+import random
 
 from google.cloud import pubsub_v1
 import json
@@ -51,6 +53,7 @@ else:
 publisher = pubsub_v1.PublisherClient()
 subscriber = pubsub_v1.SubscriberClient()
 
+# Topics e Subscriptions
 GENERATE_PAYMENT_CODE_COMMAND_TOPIC = f"projects/{PROJECT_ID}/topics/commands.payment.generate_code"
 PROCESS_PAYMENT_COMMAND_TOPIC = f"projects/{PROJECT_ID}/topics/commands.payment.process"
 REFUND_PAYMENT_COMMAND_TOPIC = f"projects/{PROJECT_ID}/topics/commands.payment.refund"
@@ -71,27 +74,36 @@ class PaymentCodeDB(Base):
     __tablename__ = "payment_codes"
     id = Column(Integer, primary_key=True, index=True)
     code = Column(String, unique=True, index=True)
-    transaction_id = Column(String, unique=True, index=True)
+    transaction_id = Column(String, index=True)
     customer_id = Column(Integer)
     vehicle_id = Column(Integer)
     amount = Column(Float)
+    payment_type = Column(String)
+    status = Column(String, default="pending")  # pending, used, expired
     expires_at = Column(DateTime)
-    is_used = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.now)
 
 
 class PaymentDB(Base):
     __tablename__ = "payments"
-    id = Column(String, primary_key=True, default=lambda: str(
-        uuid.uuid4()))
-    transaction_id = Column(String, unique=True, index=True)
-    payment_code_id = Column(Integer, unique=True)
+    id = Column(Integer, primary_key=True, index=True)
+    payment_code = Column(String, index=True)
+    transaction_id = Column(String, index=True)
     customer_id = Column(Integer)
     vehicle_id = Column(Integer)
     amount = Column(Float)
-    payment_method = Column(String)
-    status = Column(String, default="pending")
+    payment_type = Column(String)
+    payment_method = Column(String)  # pix, credit_card, etc.
+    status = Column(String)  # completed, failed, refunded
     processed_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class PaymentCodeCreate(BaseModel):
+    customer_id: int
+    vehicle_id: int
+    amount: float = Field(..., gt=0)
+    payment_type: str
 
 
 class PaymentCodeResponse(BaseModel):
@@ -101,33 +113,29 @@ class PaymentCodeResponse(BaseModel):
     customer_id: int
     vehicle_id: int
     amount: float
+    payment_type: str
+    status: str
     expires_at: datetime
-    is_used: bool
     created_at: datetime
 
 
-class PaymentRequest(BaseModel):
+class PaymentCreate(BaseModel):
     payment_code: str
-    payment_method: str = Field(..., pattern="^(pix|card|bank_transfer)$",
-                                description="Valid methods: pix, card, bank_transfer")
+    payment_method: str = "pix"
 
 
 class PaymentResponse(BaseModel):
-    id: str
+    id: int
+    payment_code: str
     transaction_id: str
-    payment_code_id: int
     customer_id: int
     vehicle_id: int
     amount: float
+    payment_type: str
     payment_method: str
     status: str
     processed_at: datetime
-
-
-class PaymentsResponse(BaseModel):
-    payments: List[PaymentResponse]
-    total: int
-    timestamp: datetime
+    created_at: datetime
 
 
 def get_db():
@@ -201,6 +209,11 @@ async def publish_event(topic_path: str, event_data: BaseModel, transaction_id: 
         logger.error(f"Error publishing to {topic_path}: {e}")
 
 
+def generate_payment_code() -> str:
+    """Gera um código de pagamento único."""
+    return f"PAY{random.randint(100000, 999999)}{int(datetime.now().timestamp())}"
+
+
 async def handle_generate_payment_code_command(message):
     db = SessionLocal()
     try:
@@ -208,91 +221,69 @@ async def handle_generate_payment_code_command(message):
         logger.info(
             f"Received GeneratePaymentCodeCommand: {command.model_dump_json()}")
 
-        existing_code = db.query(PaymentCodeDB).filter(
-            PaymentCodeDB.transaction_id == command.transaction_id).first()
-        if existing_code:
-            logger.warning(
-                f"Payment code already exists for transaction_id {command.transaction_id}. Returning existing.")
-            await publish_event(
-                PAYMENT_CODE_GENERATED_EVENT_TOPIC,
-                PaymentCodeGeneratedEvent(
-                    transaction_id=existing_code.transaction_id,
-                    payment_code=existing_code.code,
-                    customer_id=existing_code.customer_id,
-                    vehicle_id=existing_code.vehicle_id,
-                    amount=existing_code.amount,
-                    expires_at=existing_code.expires_at
-                ),
-                command.transaction_id
-            )
-            message.ack()
-            return
+        # Gerar código único
+        payment_code = generate_payment_code()
+        expires_at = datetime.now() + timedelta(minutes=30)  # Expira em 30 minutos
 
-        payment_code = str(uuid.uuid4()).replace(
-            '-', '')[:10].upper()
-
-        expires_at = datetime.now() + timedelta(minutes=30)
-
+        # Salvar no banco
         db_payment_code = PaymentCodeDB(
             code=payment_code,
             transaction_id=command.transaction_id,
             customer_id=command.customer_id,
             vehicle_id=command.vehicle_id,
             amount=command.amount,
+            payment_type=command.payment_type,
+            status="pending",
             expires_at=expires_at
         )
         db.add(db_payment_code)
         db.commit()
         db.refresh(db_payment_code)
 
+        # Publicar evento de sucesso
         await publish_event(
             PAYMENT_CODE_GENERATED_EVENT_TOPIC,
             PaymentCodeGeneratedEvent(
-                transaction_id=db_payment_code.transaction_id,
-                payment_code=db_payment_code.code,
-                customer_id=db_payment_code.customer_id,
-                vehicle_id=db_payment_code.vehicle_id,
-                amount=db_payment_code.amount,
-                expires_at=db_payment_code.expires_at
+                transaction_id=command.transaction_id,
+                payment_code=payment_code,
+                customer_id=command.customer_id,
+                vehicle_id=command.vehicle_id,
+                amount=command.amount,
+                payment_type=command.payment_type,
+                expires_at=expires_at
             ),
             command.transaction_id
         )
-        logger.info(
-            f"Payment code {payment_code} generated for transaction {command.transaction_id}")
+        logger.info(f"Payment code {payment_code} generated successfully.")
         message.ack()
 
     except ValidationError as e:
         logger.error(
             f"Validation error for GeneratePaymentCodeCommand: {e} - Data: {message.data}")
         message.ack()
-    except IntegrityError:
-        db.rollback()
-        await publish_event(
-            PAYMENT_CODE_GENERATION_FAILED_EVENT_TOPIC,
-            PaymentCodeGenerationFailedEvent(
-                transaction_id=command.transaction_id,
-                customer_id=command.customer_id,
-                vehicle_id=command.vehicle_id,
-                amount=command.amount,
-                reason="Duplicate transaction ID or code."
-            ),
-            command.transaction_id
-        )
-        message.ack()
     except Exception as e:
         logger.error(f"Error processing GeneratePaymentCodeCommand: {e}")
+
+        # Publicar evento de falha
+        try:
+            command = GeneratePaymentCodeCommand.model_validate_json(
+                message.data)
+            await publish_event(
+                PAYMENT_CODE_GENERATION_FAILED_EVENT_TOPIC,
+                PaymentCodeGenerationFailedEvent(
+                    transaction_id=command.transaction_id,
+                    customer_id=command.customer_id,
+                    vehicle_id=command.vehicle_id,
+                    amount=command.amount,
+                    payment_type=command.payment_type,
+                    reason=str(e)
+                ),
+                command.transaction_id
+            )
+        except Exception as pub_error:
+            logger.error(f"Error publishing failure event: {pub_error}")
+
         db.rollback()
-        await publish_event(
-            PAYMENT_CODE_GENERATION_FAILED_EVENT_TOPIC,
-            PaymentCodeGenerationFailedEvent(
-                transaction_id=command.transaction_id,
-                customer_id=command.customer_id,
-                vehicle_id=command.vehicle_id,
-                amount=command.amount,
-                reason=f"Internal error: {str(e)}"
-            ),
-            command.transaction_id
-        )
         message.ack()
     finally:
         db.close()
@@ -305,10 +296,11 @@ async def handle_process_payment_command(message):
         logger.info(
             f"Received ProcessPaymentCommand: {command.model_dump_json()}")
 
-        payment_code_obj = db.query(PaymentCodeDB).filter(
+        # Buscar código de pagamento
+        payment_code_record = db.query(PaymentCodeDB).filter(
             PaymentCodeDB.code == command.payment_code).first()
 
-        if not payment_code_obj:
+        if not payment_code_record:
             await publish_event(
                 PAYMENT_FAILED_EVENT_TOPIC,
                 PaymentFailedEvent(
@@ -317,6 +309,7 @@ async def handle_process_payment_command(message):
                     customer_id=0,
                     vehicle_id=0,
                     amount=0.0,
+                    payment_type="unknown",
                     reason="Payment code not found"
                 ),
                 command.transaction_id
@@ -324,31 +317,17 @@ async def handle_process_payment_command(message):
             message.ack()
             return
 
-        if payment_code_obj.is_used:
+        # Verificar se não expirou
+        if datetime.now() > payment_code_record.expires_at:
             await publish_event(
                 PAYMENT_FAILED_EVENT_TOPIC,
                 PaymentFailedEvent(
                     transaction_id=command.transaction_id,
                     payment_code=command.payment_code,
-                    customer_id=payment_code_obj.customer_id,
-                    vehicle_id=payment_code_obj.vehicle_id,
-                    amount=payment_code_obj.amount,
-                    reason="Payment code already used"
-                ),
-                command.transaction_id
-            )
-            message.ack()
-            return
-
-        if datetime.now() > payment_code_obj.expires_at:
-            await publish_event(
-                PAYMENT_FAILED_EVENT_TOPIC,
-                PaymentFailedEvent(
-                    transaction_id=command.transaction_id,
-                    payment_code=command.payment_code,
-                    customer_id=payment_code_obj.customer_id,
-                    vehicle_id=payment_code_obj.vehicle_id,
-                    amount=payment_code_obj.amount,
+                    customer_id=payment_code_record.customer_id,
+                    vehicle_id=payment_code_record.vehicle_id,
+                    amount=payment_code_record.amount,
+                    payment_type=payment_code_record.payment_type,
                     reason="Payment code expired"
                 ),
                 command.transaction_id
@@ -356,105 +335,78 @@ async def handle_process_payment_command(message):
             message.ack()
             return
 
-        existing_payment = db.query(PaymentDB).filter(
-            PaymentDB.transaction_id == command.transaction_id).first()
-        if existing_payment:
-            logger.warning(
-                f"Payment already processed for transaction {command.transaction_id}. Returning existing status.")
-            if existing_payment.status == "completed":
-                await publish_event(
-                    PAYMENT_PROCESSED_EVENT_TOPIC,
-                    PaymentProcessedEvent(
-                        transaction_id=existing_payment.transaction_id,
-                        payment_id=existing_payment.id,
-                        payment_code=command.payment_code,
-                        customer_id=existing_payment.customer_id,
-                        vehicle_id=existing_payment.vehicle_id,
-                        amount=existing_payment.amount,
-                        payment_method=existing_payment.payment_method,
-                        status=existing_payment.status
-                    ),
-                    command.transaction_id
-                )
-            else:
-                await publish_event(
-                    PAYMENT_FAILED_EVENT_TOPIC,
-                    PaymentFailedEvent(
-                        transaction_id=existing_payment.transaction_id,
-                        payment_code=command.payment_code,
-                        customer_id=existing_payment.customer_id,
-                        vehicle_id=existing_payment.vehicle_id,
-                        amount=existing_payment.amount,
-                        reason=f"Payment already exists with status: {existing_payment.status}"
-                    ),
-                    command.transaction_id
-                )
-            message.ack()
-            return
-
-        payment_successful = True
-
-        if payment_successful:
-            payment_code_obj.is_used = True
-            db.add(payment_code_obj)
-
-            db_payment = PaymentDB(
-                transaction_id=command.transaction_id,
-                payment_code_id=payment_code_obj.id,
-                customer_id=payment_code_obj.customer_id,
-                vehicle_id=payment_code_obj.vehicle_id,
-                amount=payment_code_obj.amount,
-                payment_method=command.payment_method,
-                status="completed"
-            )
-            db.add(db_payment)
-            db.commit()
-            db.refresh(db_payment)
-
-            await publish_event(
-                PAYMENT_PROCESSED_EVENT_TOPIC,
-                PaymentProcessedEvent(
-                    transaction_id=db_payment.transaction_id,
-                    payment_id=db_payment.id,
-                    payment_code=command.payment_code,
-                    customer_id=db_payment.customer_id,
-                    vehicle_id=db_payment.vehicle_id,
-                    amount=db_payment.amount,
-                    payment_method=db_payment.payment_method,
-                    status=db_payment.status
-                ),
-                command.transaction_id
-            )
-            logger.info(
-                f"Payment {db_payment.id} processed successfully for transaction {command.transaction_id}")
-        else:
-            db_payment = PaymentDB(
-                transaction_id=command.transaction_id,
-                payment_code_id=payment_code_obj.id,
-                customer_id=payment_code_obj.customer_id,
-                vehicle_id=payment_code_obj.vehicle_id,
-                amount=payment_code_obj.amount,
-                payment_method=command.payment_method,
-                status="failed"
-            )
-            db.add(db_payment)
-            db.commit()
-            db.refresh(db_payment)
-
+        # Verificar se já foi usado
+        if payment_code_record.status != "pending":
             await publish_event(
                 PAYMENT_FAILED_EVENT_TOPIC,
                 PaymentFailedEvent(
                     transaction_id=command.transaction_id,
                     payment_code=command.payment_code,
-                    customer_id=payment_code_obj.customer_id,
-                    vehicle_id=payment_code_obj.vehicle_id,
-                    amount=payment_code_obj.amount,
-                    reason="Payment processing failed (simulated)"
+                    customer_id=payment_code_record.customer_id,
+                    vehicle_id=payment_code_record.vehicle_id,
+                    amount=payment_code_record.amount,
+                    payment_type=payment_code_record.payment_type,
+                    reason=f"Payment code already {payment_code_record.status}"
                 ),
                 command.transaction_id
             )
-            logger.warning(
-                f"Payment for transaction {command.transaction_id} failed (simulated).")
+            message.ack()
+            return
+
+        # Simular processamento de pagamento (sempre sucesso para testes)
+        payment_success = True  # Em produção, aqui seria a integração com gateway
+
+        if payment_success:
+            # Marcar código como usado
+            payment_code_record.status = "used"
+            db.add(payment_code_record)
+
+            # Criar registro de pagamento
+            payment_record = PaymentDB(
+                payment_code=command.payment_code,
+                transaction_id=command.transaction_id,
+                customer_id=payment_code_record.customer_id,
+                vehicle_id=payment_code_record.vehicle_id,
+                amount=payment_code_record.amount,
+                payment_type=payment_code_record.payment_type,
+                payment_method=command.payment_method,
+                status="completed"
+            )
+            db.add(payment_record)
+            db.commit()
+            db.refresh(payment_record)
+
+            # Publicar evento de sucesso
+            await publish_event(
+                PAYMENT_PROCESSED_EVENT_TOPIC,
+                PaymentProcessedEvent(
+                    transaction_id=command.transaction_id,
+                    payment_id=str(payment_record.id),
+                    payment_code=command.payment_code,
+                    customer_id=payment_code_record.customer_id,
+                    vehicle_id=payment_code_record.vehicle_id,
+                    amount=payment_code_record.amount,
+                    payment_type=payment_code_record.payment_type,
+                    payment_method=command.payment_method,
+                    status="completed"
+                ),
+                command.transaction_id
+            )
+            logger.info(f"Payment {payment_record.id} processed successfully.")
+        else:
+            await publish_event(
+                PAYMENT_FAILED_EVENT_TOPIC,
+                PaymentFailedEvent(
+                    transaction_id=command.transaction_id,
+                    payment_code=command.payment_code,
+                    customer_id=payment_code_record.customer_id,
+                    vehicle_id=payment_code_record.vehicle_id,
+                    amount=payment_code_record.amount,
+                    payment_type=payment_code_record.payment_type,
+                    reason="Payment processing failed"
+                ),
+                command.transaction_id
+            )
 
         message.ack()
 
@@ -462,36 +414,9 @@ async def handle_process_payment_command(message):
         logger.error(
             f"Validation error for ProcessPaymentCommand: {e} - Data: {message.data}")
         message.ack()
-    except IntegrityError:
-        db.rollback()
-        await publish_event(
-            PAYMENT_FAILED_EVENT_TOPIC,
-            PaymentFailedEvent(
-                transaction_id=command.transaction_id,
-                payment_code=command.payment_code,
-                customer_id=payment_code_obj.customer_id if payment_code_obj else 0,
-                vehicle_id=payment_code_obj.vehicle_id if payment_code_obj else 0,
-                amount=payment_code_obj.amount if payment_code_obj else 0.0,
-                reason="Payment already recorded or duplicate entry."
-            ),
-            command.transaction_id
-        )
-        message.ack()
     except Exception as e:
         logger.error(f"Error processing ProcessPaymentCommand: {e}")
         db.rollback()
-        await publish_event(
-            PAYMENT_FAILED_EVENT_TOPIC,
-            PaymentFailedEvent(
-                transaction_id=command.transaction_id,
-                payment_code=command.payment_code,
-                customer_id=payment_code_obj.customer_id if payment_code_obj else 0,
-                vehicle_id=payment_code_obj.vehicle_id if payment_code_obj else 0,
-                amount=payment_code_obj.amount if payment_code_obj else 0.0,
-                reason=f"Internal error: {str(e)}"
-            ),
-            command.transaction_id
-        )
         message.ack()
     finally:
         db.close()
@@ -504,68 +429,65 @@ async def handle_refund_payment_command(message):
         logger.info(
             f"Received RefundPaymentCommand: {command.model_dump_json()}")
 
-        payment = db.query(PaymentDB).filter(
-            PaymentDB.transaction_id == command.transaction_id).first()
+        # Buscar pagamento
+        payment_record = db.query(PaymentDB).filter(
+            PaymentDB.id == int(command.payment_id)).first()
 
-        if not payment:
+        if not payment_record:
             await publish_event(
                 PAYMENT_REFUND_FAILED_EVENT_TOPIC,
                 PaymentRefundFailedEvent(
                     transaction_id=command.transaction_id,
                     payment_id=command.payment_id,
-                    reason="Payment not found for transaction ID"
+                    reason="Payment not found"
                 ),
                 command.transaction_id
             )
             message.ack()
             return
 
-        if payment.status == "refunded":
-            logger.info(
-                f"Payment {payment.id} already refunded for transaction {command.transaction_id}")
-            await publish_event(
-                PAYMENT_REFUNDED_EVENT_TOPIC,
-                PaymentRefundedEvent(
-                    transaction_id=command.transaction_id,
-                    payment_id=payment.id,
-                    status="refunded"
-                ),
-                command.transaction_id
-            )
-            message.ack()
-            return
-
-        if payment.status == "failed":
-            logger.warning(
-                f"Cannot refund a failed payment {payment.id} for transaction {command.transaction_id}")
+        if payment_record.status != "completed":
             await publish_event(
                 PAYMENT_REFUND_FAILED_EVENT_TOPIC,
                 PaymentRefundFailedEvent(
                     transaction_id=command.transaction_id,
-                    payment_id=payment.id,
-                    reason="Cannot refund a failed payment"
+                    payment_id=command.payment_id,
+                    reason=f"Cannot refund payment with status: {payment_record.status}"
                 ),
                 command.transaction_id
             )
             message.ack()
             return
 
-        payment.status = "refunded"
-        db.add(payment)
-        db.commit()
-        db.refresh(payment)
+        # Simular reembolso (sempre sucesso para testes)
+        refund_success = True
 
-        await publish_event(
-            PAYMENT_REFUNDED_EVENT_TOPIC,
-            PaymentRefundedEvent(
-                transaction_id=command.transaction_id,
-                payment_id=payment.id,
-                status=payment.status
-            ),
-            command.transaction_id
-        )
-        logger.info(
-            f"Payment {payment.id} refunded successfully for transaction {command.transaction_id}")
+        if refund_success:
+            payment_record.status = "refunded"
+            db.add(payment_record)
+            db.commit()
+
+            await publish_event(
+                PAYMENT_REFUNDED_EVENT_TOPIC,
+                PaymentRefundedEvent(
+                    transaction_id=command.transaction_id,
+                    payment_id=command.payment_id,
+                    status="refunded"
+                ),
+                command.transaction_id
+            )
+            logger.info(f"Payment {command.payment_id} refunded successfully.")
+        else:
+            await publish_event(
+                PAYMENT_REFUND_FAILED_EVENT_TOPIC,
+                PaymentRefundFailedEvent(
+                    transaction_id=command.transaction_id,
+                    payment_id=command.payment_id,
+                    reason="Refund processing failed"
+                ),
+                command.transaction_id
+            )
+
         message.ack()
 
     except ValidationError as e:
@@ -575,15 +497,6 @@ async def handle_refund_payment_command(message):
     except Exception as e:
         logger.error(f"Error processing RefundPaymentCommand: {e}")
         db.rollback()
-        await publish_event(
-            PAYMENT_REFUND_FAILED_EVENT_TOPIC,
-            PaymentRefundFailedEvent(
-                transaction_id=command.transaction_id,
-                payment_id=command.payment_id,
-                reason=f"Internal error: {str(e)}"
-            ),
-            command.transaction_id
-        )
         message.ack()
     finally:
         db.close()
@@ -592,74 +505,59 @@ async def handle_refund_payment_command(message):
 async def subscribe_to_payment_commands():
     loop = asyncio.get_event_loop()
 
-    for topic, sub in [
-        (GENERATE_PAYMENT_CODE_COMMAND_TOPIC, GENERATE_PAYMENT_CODE_SUBSCRIPTION),
-        (PROCESS_PAYMENT_COMMAND_TOPIC, PROCESS_PAYMENT_SUBSCRIPTION),
-        (REFUND_PAYMENT_COMMAND_TOPIC, REFUND_PAYMENT_SUBSCRIPTION)
-    ]:
+    # Criar tópicos e subscriptions
+    commands_config = [
+        (GENERATE_PAYMENT_CODE_COMMAND_TOPIC, GENERATE_PAYMENT_CODE_SUBSCRIPTION,
+         handle_generate_payment_code_command),
+        (PROCESS_PAYMENT_COMMAND_TOPIC, PROCESS_PAYMENT_SUBSCRIPTION,
+         handle_process_payment_command),
+        (REFUND_PAYMENT_COMMAND_TOPIC, REFUND_PAYMENT_SUBSCRIPTION,
+         handle_refund_payment_command)
+    ]
+
+    for topic, subscription, handler in commands_config:
         try:
             publisher.create_topic(request={"name": topic})
             logger.info(f"Topic {topic} ensured.")
         except Exception as e:
             if "Resource already exists" not in str(e):
                 logger.error(f"Error creating topic {topic}: {e}")
+
         try:
             subscriber.create_subscription(
-                request={"name": sub, "topic": topic})
-            logger.info(f"Subscription {sub} ensured.")
+                request={"name": subscription, "topic": topic})
+            logger.info(f"Subscription {subscription} ensured.")
         except Exception as e:
             if "Resource already exists" not in str(e):
-                logger.error(f"Error creating subscription {sub}: {e}")
+                logger.error(
+                    f"Error creating subscription {subscription}: {e}")
 
-    logger.info(
-        f"Listening for messages on {GENERATE_PAYMENT_CODE_SUBSCRIPTION}")
-    streaming_pull_future_generate = subscriber.subscribe(
-        GENERATE_PAYMENT_CODE_SUBSCRIPTION,
-        callback=lambda message: loop.create_task(
-            handle_generate_payment_code_command(message))
-    )
-
-    logger.info(f"Listening for messages on {PROCESS_PAYMENT_SUBSCRIPTION}")
-    streaming_pull_future_process = subscriber.subscribe(
-        PROCESS_PAYMENT_SUBSCRIPTION,
-        callback=lambda message: loop.create_task(
-            handle_process_payment_command(message))
-    )
-
-    logger.info(f"Listening for messages on {REFUND_PAYMENT_SUBSCRIPTION}")
-    streaming_pull_future_refund = subscriber.subscribe(
-        REFUND_PAYMENT_SUBSCRIPTION,
-        callback=lambda message: loop.create_task(
-            handle_refund_payment_command(message))
-    )
+        logger.info(f"Listening for messages on {subscription}")
+        subscriber.subscribe(
+            subscription,
+            callback=lambda message, h=handler: loop.create_task(h(message))
+        )
 
 
-@app.post("/payment-codes", response_model=PaymentCodeResponse, status_code=status.HTTP_201_CREATED)
-async def create_payment_code(
-    customer_id: int, vehicle_id: int, amount: float, db: Annotated[Session, Depends(get_db)]
-):
+async def create_payment_code(payment_code: PaymentCodeCreate, db: Annotated[Session, Depends(get_db)]):
     try:
-        payment_code = str(uuid.uuid4()).replace('-', '')[:10].upper()
+        code = generate_payment_code()
         expires_at = datetime.now() + timedelta(minutes=30)
 
         db_payment_code = PaymentCodeDB(
-            code=payment_code,
-            transaction_id=f"direct-{uuid.uuid4()}",
-            customer_id=customer_id,
-            vehicle_id=vehicle_id,
-            amount=amount,
+            code=code,
+            transaction_id=str(uuid.uuid4()),
+            customer_id=payment_code.customer_id,
+            vehicle_id=payment_code.vehicle_id,
+            amount=payment_code.amount,
+            payment_type=payment_code.payment_type,
+            status="pending",
             expires_at=expires_at
         )
         db.add(db_payment_code)
         db.commit()
         db.refresh(db_payment_code)
-        return db_payment_code
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Could not generate unique payment code or transaction ID."
-        )
+        return PaymentCodeResponse(**db_payment_code.__dict__)
     except Exception as e:
         logger.error(f"Error creating payment code: {e}")
         raise HTTPException(
@@ -670,32 +568,81 @@ async def create_payment_code(
 
 @app.get("/payment-codes", response_model=List[PaymentCodeResponse])
 async def get_payment_codes(db: Annotated[Session, Depends(get_db)]):
-    return db.query(PaymentCodeDB).all()
+    payment_codes = db.query(PaymentCodeDB).all()
+    return [PaymentCodeResponse(**pc.__dict__) for pc in payment_codes]
 
 
 @app.get("/payment-codes/{code}", response_model=PaymentCodeResponse)
-async def get_payment_code_by_code(code: str, db: Annotated[Session, Depends(get_db)]):
+async def get_payment_code(code: str, db: Annotated[Session, Depends(get_db)]):
     payment_code = db.query(PaymentCodeDB).filter(
         PaymentCodeDB.code == code).first()
     if not payment_code:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail="Payment code not found")
-    return payment_code
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Payment code not found"
+        )
+    return PaymentCodeResponse(**payment_code.__dict__)
 
 
-@app.get("/payments", response_model=PaymentsResponse)
+@app.post("/payments", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
+async def process_payment(payment: PaymentCreate, db: Annotated[Session, Depends(get_db)]):
+    try:
+        # Buscar código de pagamento
+        payment_code_record = db.query(PaymentCodeDB).filter(
+            PaymentCodeDB.code == payment.payment_code).first()
+
+        if not payment_code_record:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Payment code not found"
+            )
+
+        if datetime.now() > payment_code_record.expires_at:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Payment code expired"
+            )
+
+        if payment_code_record.status != "pending":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Payment code already {payment_code_record.status}"
+            )
+
+        # Marcar código como usado
+        payment_code_record.status = "used"
+        db.add(payment_code_record)
+
+        # Criar registro de pagamento
+        payment_record = PaymentDB(
+            payment_code=payment.payment_code,
+            transaction_id=payment_code_record.transaction_id,
+            customer_id=payment_code_record.customer_id,
+            vehicle_id=payment_code_record.vehicle_id,
+            amount=payment_code_record.amount,
+            payment_type=payment_code_record.payment_type,
+            payment_method=payment.payment_method,
+            status="completed"
+        )
+        db.add(payment_record)
+        db.commit()
+        db.refresh(payment_record)
+
+        return PaymentResponse(**payment_record.__dict__)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing payment: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        )
+
+
+@app.get("/payments", response_model=List[PaymentResponse])
 async def get_payments(db: Annotated[Session, Depends(get_db)]):
     payments = db.query(PaymentDB).all()
-    return PaymentsResponse(payments=payments, total=len(payments), timestamp=datetime.now())
-
-
-@app.get("/payments/{payment_id}", response_model=PaymentResponse)
-async def get_payment(payment_id: str, db: Annotated[Session, Depends(get_db)]):
-    payment = db.query(PaymentDB).filter(PaymentDB.id == payment_id).first()
-    if not payment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found")
-    return payment
+    return [PaymentResponse(**p.__dict__) for p in payments]
 
 
 if __name__ == '__main__':

@@ -1,3 +1,4 @@
+# ./services/cliente-service/app.py
 from fastapi import FastAPI, HTTPException, status, Depends
 from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional, Annotated
@@ -63,10 +64,24 @@ class CustomerDB(Base):
     email = Column(String, unique=True, index=True)
     phone = Column(String)
     document = Column(String, unique=True, index=True)
-    credit_limit = Column(Float)
-    available_credit = Column(Float, nullable=False, default=0.0)
+
+    account_balance = Column(Float, nullable=False, default=0.0)
+    credit_limit = Column(Float, nullable=False, default=0.0)
+    used_credit = Column(Float, nullable=False, default=0.0)
+
     status = Column(String, default="active")
     created_at = Column(DateTime, default=datetime.now)
+
+    @property
+    def available_credit(self):
+        return max(0, self.credit_limit - self.used_credit)
+
+    def can_purchase(self, amount: float, payment_type: str) -> bool:
+        if payment_type == "cash":
+            return self.account_balance >= amount
+        elif payment_type == "credit":
+            return self.available_credit >= amount
+        return False
 
 
 class CustomerCreate(BaseModel):
@@ -74,7 +89,16 @@ class CustomerCreate(BaseModel):
     email: str = Field(..., max_length=100)
     phone: str = Field(..., min_length=10, max_length=20)
     document: str = Field(..., min_length=11, max_length=11)
-    credit_limit: float = Field(..., ge=0.0)
+    initial_balance: float = Field(default=0.0, ge=0.0)
+    credit_limit: float = Field(default=0.0, ge=0.0)
+
+
+class CustomerUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=3, max_length=100)
+    email: Optional[str] = Field(None, max_length=100)
+    phone: Optional[str] = Field(None, min_length=10, max_length=20)
+    initial_balance: Optional[float] = Field(None, ge=0.0)
+    credit_limit: Optional[float] = Field(None, ge=0.0)
 
 
 class CustomerResponse(BaseModel):
@@ -83,7 +107,9 @@ class CustomerResponse(BaseModel):
     email: str
     phone: str
     document: str
+    account_balance: float
     credit_limit: float
+    used_credit: float
     available_credit: float
     status: str
     created_at: datetime
@@ -95,9 +121,7 @@ class CustomerResponse(BaseModel):
             doc = obj_dict['document']
             obj_dict['document'] = '*' * (len(doc) - 4) + doc[-4:]
 
-        if obj_dict.get('available_credit') is None:
-            obj_dict['available_credit'] = obj_dict.get('credit_limit', 0.0)
-
+        obj_dict['available_credit'] = obj.available_credit
         return cls(**obj_dict)
 
 
@@ -111,7 +135,9 @@ class MessageResponse(BaseModel):
     message: str
     customer_id: int
     amount: float
-    available_credit: Optional[float] = None
+    payment_type: str
+    remaining_balance: Optional[float] = None
+    remaining_credit: Optional[float] = None
 
 
 def get_db():
@@ -202,6 +228,7 @@ async def handle_reserve_credit_command(message):
                     transaction_id=command.transaction_id,
                     customer_id=command.customer_id,
                     amount=command.amount,
+                    payment_type=command.payment_type,
                     reason="Customer not found"
                 ),
                 command.transaction_id
@@ -209,23 +236,31 @@ async def handle_reserve_credit_command(message):
             message.ack()
             return
 
-        customer_available_credit = customer.available_credit if customer.available_credit is not None else 0.0
-
-        if customer_available_credit < command.amount:
+        if not customer.can_purchase(command.amount, command.payment_type):
+            reason = f"Insufficient {'balance' if command.payment_type == 'cash' else 'credit'}"
             await publish_event(
                 CREDIT_RESERVATION_FAILED_EVENT_TOPIC,
                 CreditReservationFailedEvent(
                     transaction_id=command.transaction_id,
                     customer_id=command.customer_id,
                     amount=command.amount,
-                    reason="Insufficient credit"
+                    payment_type=command.payment_type,
+                    reason=reason
                 ),
                 command.transaction_id
             )
             message.ack()
             return
 
-        customer.available_credit -= command.amount
+        if command.payment_type == "cash":
+            customer.account_balance -= command.amount
+            remaining_balance = customer.account_balance
+            remaining_credit = customer.available_credit
+        else:
+            customer.used_credit += command.amount
+            remaining_balance = customer.account_balance
+            remaining_credit = customer.available_credit
+
         db.add(customer)
         db.commit()
         db.refresh(customer)
@@ -236,12 +271,14 @@ async def handle_reserve_credit_command(message):
                 transaction_id=command.transaction_id,
                 customer_id=customer.id,
                 amount=command.amount,
-                available_credit=customer.available_credit
+                payment_type=command.payment_type,
+                remaining_balance=remaining_balance,
+                remaining_credit=remaining_credit
             ),
             command.transaction_id
         )
         logger.info(
-            f"Credit reserved for customer {customer.id}. New available credit: {customer.available_credit}")
+            f"Credit reserved for customer {customer.id} using {command.payment_type}")
         message.ack()
 
     except ValidationError as e:
@@ -272,7 +309,16 @@ async def handle_release_credit_command(message):
             message.ack()
             return
 
-        customer.available_credit += command.amount
+        if command.payment_type == "cash":
+            customer.account_balance += command.amount
+            new_balance = customer.account_balance
+            new_available_credit = customer.available_credit
+        else:
+            customer.used_credit = max(
+                0, customer.used_credit - command.amount)
+            new_balance = customer.account_balance
+            new_available_credit = customer.available_credit
+
         db.add(customer)
         db.commit()
         db.refresh(customer)
@@ -283,12 +329,14 @@ async def handle_release_credit_command(message):
                 transaction_id=command.transaction_id,
                 customer_id=customer.id,
                 amount=command.amount,
-                available_credit=customer.available_credit
+                payment_type=command.payment_type,
+                new_balance=new_balance,
+                new_available_credit=new_available_credit
             ),
             command.transaction_id
         )
         logger.info(
-            f"Credit released for customer {customer.id}. New available credit: {customer.available_credit}")
+            f"Credit released for customer {customer.id} using {command.payment_type}")
         message.ack()
 
     except ValidationError as e:
@@ -361,8 +409,9 @@ async def create_customer(customer: CustomerCreate, db: Annotated[Session, Depen
             email=customer.email,
             phone=customer.phone,
             document=customer.document,
+            account_balance=customer.initial_balance,
             credit_limit=customer.credit_limit,
-            available_credit=customer.credit_limit
+            used_credit=0.0
         )
         db.add(db_customer)
         db.commit()
@@ -376,6 +425,43 @@ async def create_customer(customer: CustomerCreate, db: Annotated[Session, Depen
         )
     except Exception as e:
         logger.error(f"Error creating customer: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        )
+
+
+@app.put("/customers/{customer_id}", response_model=CustomerResponse)
+async def update_customer(customer_id: int, customer_update: CustomerUpdate, db: Annotated[Session, Depends(get_db)]):
+    try:
+        db_customer = db.query(CustomerDB).filter(
+            CustomerDB.id == customer_id).first()
+        if not db_customer:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Customer not found"
+            )
+
+        update_data = customer_update.model_dump(exclude_unset=True)
+
+        if "initial_balance" in update_data:
+            db_customer.account_balance = update_data.pop("initial_balance")
+
+        for field, value in update_data.items():
+            setattr(db_customer, field, value)
+
+        db.add(db_customer)
+        db.commit()
+        db.refresh(db_customer)
+        return CustomerResponse.from_orm_masked_document(db_customer)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already exists for another customer"
+        )
+    except Exception as e:
+        logger.error(f"Error updating customer: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error"

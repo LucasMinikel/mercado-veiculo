@@ -44,12 +44,13 @@ class TestFlow:
             # Dados únicos para evitar conflitos
             rand_num = random.randint(10000, 99999)
 
-            # 1. Criar cliente
+            # 1. Criar cliente com saldo suficiente
             customer_data = {
                 "name": f"João Silva {rand_num}",
                 "email": f"joao{rand_num}@email.com",
                 "phone": f"11999{rand_num:05d}",
                 "document": f"{rand_num:011d}",
+                "initial_balance": 60000.0,  # Saldo suficiente
                 "credit_limit": 50000.0
             }
 
@@ -57,7 +58,8 @@ class TestFlow:
             response = await client.post(f"{CLIENTE_SERVICE_URL}/customers", json=customer_data)
             assert response.status_code == 201
             customer = response.json()
-            print(f"✅ Cliente criado: {customer['id']}")
+            print(
+                f"✅ Cliente criado: {customer['id']} com saldo R\$ {customer['account_balance']}")
 
             # 2. Criar veículo
             vehicle_data = {
@@ -73,23 +75,26 @@ class TestFlow:
             response = await client.post(f"{VEICULO_SERVICE_URL}/vehicles", json=vehicle_data)
             assert response.status_code == 201
             vehicle = response.json()
-            print(f"✅ Veículo criado: {vehicle['id']}")
+            print(
+                f"✅ Veículo criado: {vehicle['id']} - R\$ {vehicle['price']}")
 
-            # 3. Iniciar compra
+            # 3. Iniciar compra - SEM amount
             purchase_data = {
                 "customer_id": customer["id"],
                 "vehicle_id": vehicle["id"],
-                "amount": vehicle["price"]
+                "payment_type": "cash"  # Usar saldo em conta
             }
 
             print(
-                f"💰 Iniciando compra: Cliente {customer['id']} -> Veículo {vehicle['id']} (R\$ {vehicle['price']})")
+                f"💰 Iniciando compra: Cliente {customer['id']} -> Veículo {vehicle['id']} (R\$ {vehicle['price']}) via {purchase_data['payment_type']}")
             response = await client.post(f"{ORQUESTRADOR_SERVICE_URL}/purchase", json=purchase_data)
             assert response.status_code == 202
 
             purchase = response.json()
             transaction_id = purchase["transaction_id"]
             print(f"✅ Compra iniciada: {transaction_id}")
+            print(
+                f"📊 Preço detectado automaticamente: R\$ {purchase.get('vehicle_price', 'N/A')}")
 
             # 4. Acompanhar SAGA
             max_attempts = 30
@@ -106,8 +111,14 @@ class TestFlow:
                 if status == "COMPLETED":
                     print(f"🏁 Status final: {status}")
                     print("✅ Fluxo completo executado com sucesso!")
+
+                    # Verificar se o preço foi definido corretamente
+                    assert saga["amount"] == vehicle["price"]
+                    print(f"✅ Preço correto na SAGA: R\$ {saga['amount']}")
                     return
                 elif status in ["FAILED", "FAILED_COMPENSATED"]:
+                    print(f"❌ SAGA falhou: {status}")
+                    print(f"🔍 Contexto: {saga.get('context', {})}")
                     pytest.fail(
                         f"SAGA falhou: {status} - {saga.get('context', {})}")
 
@@ -115,3 +126,68 @@ class TestFlow:
 
             pytest.fail(
                 f"SAGA não foi concluída em {max_attempts * 2} segundos")
+
+    @pytest.mark.asyncio
+    async def test_credit_purchase_flow(self):
+        """Testa o fluxo de compra usando limite de crédito."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            rand_num = random.randint(20000, 29999)
+
+            # 1. Criar cliente com limite de crédito alto, mas saldo baixo
+            customer_data = {
+                "name": f"Maria Credito {rand_num}",
+                "email": f"maria{rand_num}@email.com",
+                "phone": f"11888{rand_num:05d}",
+                "document": f"{rand_num:011d}",
+                "initial_balance": 5000.0,  # Saldo baixo
+                "credit_limit": 60000.0     # Crédito alto
+            }
+
+            response = await client.post(f"{CLIENTE_SERVICE_URL}/customers", json=customer_data)
+            assert response.status_code == 201
+            customer = response.json()
+            print(
+                f"✅ Cliente criado: saldo R\$ {customer['account_balance']}, crédito R\$ {customer['available_credit']}")
+
+            # 2. Criar veículo
+            vehicle_data = {
+                "brand": "Toyota",
+                "model": "Corolla",
+                "year": 2023,
+                "color": "Branco",
+                "price": 50000.0,
+                "license_plate": f"XYZ{rand_num % 10000:04d}"
+            }
+
+            response = await client.post(f"{VEICULO_SERVICE_URL}/vehicles", json=vehicle_data)
+            assert response.status_code == 201
+            vehicle = response.json()
+
+            # 3. Compra usando crédito
+            purchase_data = {
+                "customer_id": customer["id"],
+                "vehicle_id": vehicle["id"],
+                "payment_type": "credit"  # Usar limite de crédito
+            }
+
+            response = await client.post(f"{ORQUESTRADOR_SERVICE_URL}/purchase", json=purchase_data)
+            assert response.status_code == 202
+
+            purchase = response.json()
+            transaction_id = purchase["transaction_id"]
+            print(f"✅ Compra a crédito iniciada: {transaction_id}")
+
+            # 4. Aguardar conclusão
+            for attempt in range(30):
+                response = await client.get(f"{ORQUESTRADOR_SERVICE_URL}/saga-states/{transaction_id}")
+                saga = response.json()
+
+                if saga["status"] == "COMPLETED":
+                    print("✅ Compra a crédito concluída com sucesso!")
+                    return
+                elif saga["status"] in ["FAILED", "FAILED_COMPENSATED"]:
+                    pytest.fail(f"Compra a crédito falhou: {saga['status']}")
+
+                await asyncio.sleep(2)
+
+            pytest.fail("Compra a crédito não foi concluída")

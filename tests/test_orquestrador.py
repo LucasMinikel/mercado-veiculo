@@ -16,7 +16,7 @@ class TestOrquestrador:
         transaction_data = {
             "customer_id": random.randint(1, 1000),
             "vehicle_id": random.randint(1, 1000),
-            "amount": 40000.0
+            "payment_type": "cash"  # Remover amount
         }
 
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -39,9 +39,10 @@ class TestOrquestrador:
                 assert saga_state["transaction_id"] == transaction_id
                 print(f"✅ Estado da SAGA: {saga_state['status']}")
 
-            elif response.status_code == 404:
-                # IDs não existem, mas isso é esperado em teste isolado
-                print("ℹ️ Transação falhou (IDs não existem) - comportamento esperado")
+            elif response.status_code in [404, 400]:
+                # IDs não existem ou validação falhou, mas isso é esperado em teste isolado
+                print(
+                    "ℹ️ Transação falhou (IDs não existem ou validação falhou) - comportamento esperado")
                 assert True  # Teste passa mesmo assim
 
             else:
@@ -49,3 +50,31 @@ class TestOrquestrador:
                 print(
                     f"❌ Erro inesperado: {response.status_code} - {response.text}")
                 assert False, f"Erro inesperado: {response.status_code}"
+
+    @pytest.mark.asyncio
+    async def test_purchase_validation(self):
+        """Testa validações do endpoint de compra."""
+        import httpx
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Teste com dados inválidos
+            invalid_data = {
+                "customer_id": "invalid",  # Deve ser int
+                "vehicle_id": 1,
+                "payment_type": "invalid_type"  # Deve ser cash ou credit
+            }
+
+            response = await client.post(f"{ORQUESTRADOR_SERVICE_URL}/purchase", json=invalid_data)
+            assert response.status_code == 422  # Validation error
+
+            # Teste com payment_type válido
+            valid_data = {
+                "customer_id": 999999,  # ID que não existe
+                "vehicle_id": 999999,
+                "payment_type": "cash"
+            }
+
+            response = await client.post(f"{ORQUESTRADOR_SERVICE_URL}/purchase", json=valid_data)
+            # Deve retornar 404 (customer/vehicle not found) ou 400 (validation failed)
+            assert response.status_code in [400, 404]
+            print("✅ Validações funcionando corretamente")

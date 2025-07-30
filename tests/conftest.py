@@ -29,6 +29,7 @@ def sample_customer():
         "email": f"joao{rand_num}@email.com",
         "phone": f"11999{rand_num:05d}",
         "document": f"{rand_num:011d}",
+        "initial_balance": 60000.0,  # Saldo suficiente para compras
         "credit_limit": 50000.0
     }
 
@@ -56,7 +57,8 @@ def low_credit_customer():
         "email": f"maria{rand_num}@email.com",
         "phone": f"11888{rand_num:05d}",
         "document": f"{rand_num:011d}",
-        "credit_limit": 1000.0  # Crédito baixo
+        "initial_balance": 1000.0,  # Saldo baixo
+        "credit_limit": 1000.0      # Crédito baixo
     }
 
 

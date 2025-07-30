@@ -1,3 +1,4 @@
+# ./services/veiculo-service/app.py
 from fastapi import FastAPI, HTTPException, status, Depends
 from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional, Annotated
@@ -80,6 +81,15 @@ class VehicleCreate(BaseModel):
     color: str = Field(..., min_length=3, max_length=30)
     price: float = Field(..., gt=0)
     license_plate: str = Field(..., min_length=7, max_length=10)
+
+
+class VehicleUpdate(BaseModel):
+    brand: Optional[str] = Field(None, min_length=2, max_length=50)
+    model: Optional[str] = Field(None, min_length=2, max_length=50)
+    year: Optional[int] = Field(None, ge=1900, le=datetime.now().year + 1)
+    color: Optional[str] = Field(None, min_length=3, max_length=30)
+    price: Optional[float] = Field(None, gt=0)
+    license_plate: Optional[str] = Field(None, min_length=7, max_length=10)
 
 
 class VehicleResponse(BaseModel):
@@ -225,7 +235,8 @@ async def handle_reserve_vehicle_command(message):
             VEHICLE_RESERVED_EVENT_TOPIC,
             VehicleReservedEvent(
                 transaction_id=command.transaction_id,
-                vehicle_id=vehicle.id
+                vehicle_id=vehicle.id,
+                vehicle_price=vehicle.price
             ),
             command.transaction_id
         )
@@ -364,9 +375,75 @@ async def create_vehicle(vehicle: VehicleCreate, db: Annotated[Session, Depends(
         )
 
 
+@app.put("/vehicles/{vehicle_id}", response_model=VehicleResponse)
+async def update_vehicle(vehicle_id: int, vehicle_update: VehicleUpdate, db: Annotated[Session, Depends(get_db)]):
+    try:
+        db_vehicle = db.query(VehicleDB).filter(
+            VehicleDB.id == vehicle_id).first()
+        if not db_vehicle:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Vehicle not found"
+            )
+
+        # Não permitir edição de veículos reservados ou vendidos
+        if db_vehicle.is_reserved or db_vehicle.is_sold:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot edit vehicle that is reserved or sold"
+            )
+
+        update_data = vehicle_update.model_dump(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(db_vehicle, field, value)
+
+        db.add(db_vehicle)
+        db.commit()
+        db.refresh(db_vehicle)
+        return VehicleResponse.from_orm_masked_license_plate(db_vehicle)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="License plate already exists for another vehicle"
+        )
+    except Exception as e:
+        logger.error(f"Error updating vehicle: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        )
+
+
 @app.get("/vehicles", response_model=VehiclesResponse)
-async def get_vehicles(db: Annotated[Session, Depends(get_db)]):
-    vehicles = db.query(VehicleDB).all()
+async def get_vehicles(
+    db: Annotated[Session, Depends(get_db)],
+    status_filter: Optional[str] = None,
+    sort_by: Optional[str] = "price_asc"
+):
+    query = db.query(VehicleDB)
+
+    # Filtrar por status
+    if status_filter == "available":
+        query = query.filter(VehicleDB.is_reserved ==
+                             False, VehicleDB.is_sold == False)
+    elif status_filter == "sold":
+        query = query.filter(VehicleDB.is_sold == True)
+    elif status_filter == "reserved":
+        query = query.filter(VehicleDB.is_reserved == True,
+                             VehicleDB.is_sold == False)
+
+    # Ordenar
+    if sort_by == "price_asc":
+        query = query.order_by(VehicleDB.price.asc())
+    elif sort_by == "price_desc":
+        query = query.order_by(VehicleDB.price.desc())
+    elif sort_by == "year_desc":
+        query = query.order_by(VehicleDB.year.desc())
+    elif sort_by == "brand_asc":
+        query = query.order_by(VehicleDB.brand.asc())
+
+    vehicles = query.all()
     vehicles_masked = [
         VehicleResponse.from_orm_masked_license_plate(v) for v in vehicles]
     return VehiclesResponse(vehicles=vehicles_masked, total=len(vehicles), timestamp=datetime.now())

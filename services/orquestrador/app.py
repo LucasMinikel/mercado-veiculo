@@ -1,3 +1,4 @@
+# ./services/orquestrador/app.py
 from fastapi import FastAPI, HTTPException, status, Depends
 from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional, Annotated
@@ -97,6 +98,45 @@ EVENT_SUBSCRIPTIONS = {
 }
 
 
+class VehicleDB(Base):
+    __tablename__ = "vehicles_cache"
+    id = Column(Integer, primary_key=True, index=True)
+    brand = Column(String)
+    model = Column(String)
+    year = Column(Integer)
+    color = Column(String)
+    price = Column(Float)
+    license_plate = Column(String)
+    is_reserved = Column(String, default="false")
+    is_sold = Column(String, default="false")
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class CustomerDB(Base):
+    __tablename__ = "customers_cache"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String)
+    email = Column(String)
+    phone = Column(String)
+    document = Column(String)
+    account_balance = Column(Float, default=0.0)
+    credit_limit = Column(Float, default=0.0)
+    used_credit = Column(Float, default=0.0)
+    status = Column(String, default="active")
+    created_at = Column(DateTime, default=datetime.now)
+
+    @property
+    def available_credit(self):
+        return max(0, self.credit_limit - self.used_credit)
+
+    def can_purchase(self, amount: float, payment_type: str) -> bool:
+        if payment_type == "cash":
+            return self.account_balance >= amount
+        elif payment_type == "credit":
+            return self.available_credit >= amount
+        return False
+
+
 class SagaStateDB(Base):
     __tablename__ = "saga_states"
     id = Column(Integer, primary_key=True, index=True)
@@ -104,6 +144,7 @@ class SagaStateDB(Base):
     customer_id = Column(Integer, nullable=True)
     vehicle_id = Column(Integer, nullable=True)
     amount = Column(Float, nullable=True)
+    payment_type = Column(String, nullable=True)
     status = Column(String)
     current_step = Column(String, nullable=True)
     context = Column(JSON, default=dict)
@@ -114,7 +155,7 @@ class SagaStateDB(Base):
 class PurchaseRequest(BaseModel):
     customer_id: int
     vehicle_id: int
-    amount: float
+    payment_type: str = Field(..., pattern="^(cash|credit)$")
 
 
 class SagaStateResponse(BaseModel):
@@ -122,6 +163,7 @@ class SagaStateResponse(BaseModel):
     customer_id: Optional[int]
     vehicle_id: Optional[int]
     amount: Optional[float]
+    payment_type: Optional[str]
     status: str
     current_step: Optional[str]
     context: dict
@@ -133,6 +175,8 @@ class PurchaseResponse(BaseModel):
     message: str
     transaction_id: str
     saga_status: str
+    vehicle_price: Optional[float] = None
+    payment_type: str
 
 
 def get_db():
@@ -192,6 +236,30 @@ async def health_check(db: Annotated[Session, Depends(get_db)]):
         timestamp=datetime.now(),
         version='1.0.0'
     )
+
+
+async def get_vehicle_info(vehicle_id: int) -> Optional[dict]:
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"http://veiculo-service:8080/vehicles/{vehicle_id}")
+            if response.status_code == 200:
+                return response.json()
+            return None
+    except Exception as e:
+        logger.error(f"Error fetching vehicle {vehicle_id}: {e}")
+        return None
+
+
+async def get_customer_info(customer_id: int) -> Optional[dict]:
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"http://cliente-service:8080/customers/{customer_id}")
+            if response.status_code == 200:
+                return response.json()
+            return None
+    except Exception as e:
+        logger.error(f"Error fetching customer {customer_id}: {e}")
+        return None
 
 
 async def publish_command(topic_path: str, command_data: BaseModel, transaction_id: str):
@@ -318,7 +386,8 @@ async def handle_vehicle_reserved_event(message):
                     transaction_id=event.transaction_id,
                     customer_id=saga_state.customer_id,
                     vehicle_id=saga_state.vehicle_id,
-                    amount=saga_state.amount
+                    amount=saga_state.amount,
+                    payment_type=saga_state.payment_type
                 ),
                 event.transaction_id
             )
@@ -356,7 +425,8 @@ async def handle_vehicle_reservation_failed_event(message):
                 ReleaseCreditCommand(
                     transaction_id=event.transaction_id,
                     customer_id=saga_state.customer_id,
-                    amount=saga_state.amount
+                    amount=saga_state.amount,
+                    payment_type=saga_state.payment_type
                 ),
                 event.transaction_id
             )
@@ -393,7 +463,8 @@ async def handle_vehicle_released_event(message):
                     ReleaseCreditCommand(
                         transaction_id=event.transaction_id,
                         customer_id=saga_state.customer_id,
-                        amount=saga_state.amount
+                        amount=saga_state.amount,
+                        payment_type=saga_state.payment_type
                     ),
                     event.transaction_id
                 )
@@ -679,14 +750,71 @@ async def subscribe_to_all_events():
 @app.post("/purchase", response_model=PurchaseResponse, status_code=status.HTTP_202_ACCEPTED)
 async def start_purchase_saga(request: PurchaseRequest, db: Annotated[Session, Depends(get_db)]):
     transaction_id = str(uuid.uuid4())
+
+    # 1. Buscar e validar veículo
+    vehicle_info = await get_vehicle_info(request.vehicle_id)
+    if not vehicle_info:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Vehicle not found"
+        )
+
+    if vehicle_info.get("is_sold") or vehicle_info.get("is_reserved"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Vehicle is not available for purchase"
+        )
+
+    vehicle_price = vehicle_info.get("price")
+    if not vehicle_price or vehicle_price <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid vehicle price"
+        )
+
+    # 2. Buscar e validar cliente
+    customer_info = await get_customer_info(request.customer_id)
+    if not customer_info:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Customer not found"
+        )
+
+    # 3. Validar capacidade de pagamento
+    if request.payment_type == "cash":
+        if customer_info.get("account_balance", 0) < vehicle_price:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Insufficient account balance"
+            )
+    elif request.payment_type == "credit":
+        if customer_info.get("available_credit", 0) < vehicle_price:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Insufficient credit limit"
+            )
+
+    # 4. Criar estado da SAGA
     saga_state = SagaStateDB(
         transaction_id=transaction_id,
         customer_id=request.customer_id,
         vehicle_id=request.vehicle_id,
-        amount=request.amount,
+        amount=vehicle_price,  # Preço real do veículo
+        payment_type=request.payment_type,
         status="STARTED",
         current_step="CREDIT_RESERVATION",
-        context={}
+        context={
+            "vehicle_info": {
+                "brand": vehicle_info.get("brand"),
+                "model": vehicle_info.get("model"),
+                "year": vehicle_info.get("year"),
+                "price": vehicle_price
+            },
+            "customer_info": {
+                "name": customer_info.get("name"),
+                "email": customer_info.get("email")
+            }
+        }
     )
     db.add(saga_state)
     db.commit()
@@ -694,21 +822,26 @@ async def start_purchase_saga(request: PurchaseRequest, db: Annotated[Session, D
     logger.info(f"Saga {transaction_id} started. Initial state saved.")
 
     try:
+        # 5. Iniciar SAGA com comando de reserva de crédito
         await publish_command(
             COMMAND_TOPICS["credit.reserve"],
             ReserveCreditCommand(
                 transaction_id=transaction_id,
                 customer_id=request.customer_id,
-                amount=request.amount
+                amount=vehicle_price,
+                payment_type=request.payment_type
             ),
             transaction_id
         )
         logger.info(
             f"Command ReserveCredit for saga {transaction_id} published.")
+
         return PurchaseResponse(
             message="Purchase saga initiated. Credit reservation pending.",
             transaction_id=transaction_id,
-            saga_status="IN_PROGRESS"
+            saga_status="IN_PROGRESS",
+            vehicle_price=vehicle_price,
+            payment_type=request.payment_type
         )
     except Exception as e:
         logger.error(
