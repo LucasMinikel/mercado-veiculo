@@ -26,7 +26,7 @@ O sistema é composto pelos seguintes microsserviços:
     *   **Comunicação (Pub/Sub)**: Responde a comandos de reserva (`commands.credit.reserve`) e liberação (`commands.credit.release`) de crédito, e publica eventos de sucesso (`events.credit.reserved`, `events.credit.released`) ou falha (`events.credit.reservation_failed`).
 
 *   **`veiculo-service`**:
-    *   **Responsabilidade**: Gerencia o cadastro de veículos (marca, modelo, ano, cor, preço, placa), e controla o status de reserva e venda (`is_reserved`, `is_sold`).
+    *   **Responsabilidade**: Gerencia o cadastro de veículos (marca, modelo, ano, cor, preço, placa, **número do chassi, RENAVAM**), e controla o status de reserva e venda (`is_reserved`, `is_sold`).
     *   **Tecnologias**: FastAPI, SQLAlchemy (PostgreSQL).
     *   **Endpoints Expostos**: `/vehicles`, `/health`, `/vehicles/{id}/mark_as_sold`.
     *   **Comunicação (Pub/Sub)**: Responde a comandos de reserva (`commands.vehicle.reserve`) e liberação (`commands.vehicle.release`) de veículos, e publica eventos de sucesso (`events.vehicle.reserved`, `events.vehicle.released`) ou falha (`events.vehicle.reservation_failed`).
@@ -125,9 +125,14 @@ Atualmente, o projeto possui a estrutura base de microsserviços e a Saga de com
 
 ### Funcionalidades Pendentes (Próximas Etapas):
 
-*   **`cliente-service` e `veiculo-service`**:
-    *   **Modelagem de Dados**: Complementar os campos de dados sensíveis para clientes e veículos conforme as necessidades de negócio (documentação, pagamento).
-    *   **APIs de Edição**: Implementar endpoints para edição de dados de clientes e veículos.
+*   **`cliente-service`**:
+    *   **Modelagem de Dados**: Complementar os campos de dados sensíveis para clientes conforme as necessidades de negócio (documentação, pagamento).
+    *   **APIs de Edição**: Implementar endpoints para edição de dados de clientes.
+    *   **Listagens**: Implementar listagens de veículos à venda e vendidos, com ordenação por preço.
+
+*   **`veiculo-service`**:
+    *   **Modelagem de Dados**: Complementar os campos de dados sensíveis para veículos conforme as necessidades de negócio (documentação, pagamento).
+    *   **APIs de Edição**: Implementar endpoints para edição de dados de veículos.
     *   **Listagens**: Implementar listagens de veículos à venda e vendidos, com ordenação por preço.
 
 *   **Processo de Venda**:
@@ -235,4 +240,3 @@ O deploy na GCP é gerenciado via Terraform e scripts auxiliares.
 *   **Destruir apenas os serviços (aplicações)**: `make destroy-app`
 
 ---
-
