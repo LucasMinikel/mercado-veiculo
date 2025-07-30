@@ -22,7 +22,8 @@ from shared.models import (
     VehicleReservedEvent, VehicleReservationFailedEvent, VehicleReleasedEvent,
     PaymentCodeGeneratedEvent, PaymentCodeGenerationFailedEvent,
     PaymentProcessedEvent, PaymentFailedEvent,
-    PaymentRefundedEvent, PaymentRefundFailedEvent
+    PaymentRefundedEvent, PaymentRefundFailedEvent,
+    CancelPurchaseCommand, PurchaseCancelledEvent, CancellationFailedEvent
 )
 
 from google.cloud import pubsub_v1
@@ -65,6 +66,7 @@ COMMAND_TOPICS = {
     "payment.generate_code": f"projects/{PROJECT_ID}/topics/commands.payment.generate_code",
     "payment.process": f"projects/{PROJECT_ID}/topics/commands.payment.process",
     "payment.refund": f"projects/{PROJECT_ID}/topics/commands.payment.refund",
+    "purchase.cancel": f"projects/{PROJECT_ID}/topics/commands.purchase.cancel",
 }
 
 EVENT_TOPICS = {
@@ -80,6 +82,8 @@ EVENT_TOPICS = {
     "payment.failed": f"projects/{PROJECT_ID}/topics/events.payment.failed",
     "payment.refunded": f"projects/{PROJECT_ID}/topics/events.payment.refunded",
     "payment.refund_failed": f"projects/{PROJECT_ID}/topics/events.payment.refund_failed",
+    "purchase.cancelled": f"projects/{PROJECT_ID}/topics/events.purchase.cancelled",
+    "purchase.cancellation_failed": f"projects/{PROJECT_ID}/topics/events.purchase.cancellation_failed",
 }
 
 EVENT_SUBSCRIPTIONS = {
@@ -95,6 +99,8 @@ EVENT_SUBSCRIPTIONS = {
     "payment.failed": f"projects/{PROJECT_ID}/subscriptions/orquestrador-payment-failed-sub",
     "payment.refunded": f"projects/{PROJECT_ID}/subscriptions/orquestrador-payment-refunded-sub",
     "payment.refund_failed": f"projects/{PROJECT_ID}/subscriptions/orquestrador-payment-refund-failed-sub",
+    "purchase.cancelled": f"projects/{PROJECT_ID}/subscriptions/orquestrador-purchase-cancelled-sub",
+    "purchase.cancellation_failed": f"projects/{PROJECT_ID}/subscriptions/orquestrador-purchase-cancellation-failed-sub",
 }
 
 
@@ -340,11 +346,18 @@ async def handle_credit_released_event(message):
     db = SessionLocal()
     try:
         event = CreditReleasedEvent.model_validate_json(message.data)
-        logger.info(
-            f"Received CreditReleasedEvent (compensation): {event.model_dump_json()}")
+        logger.info(f"Received CreditReleasedEvent: {event.model_dump_json()}")
+
         saga_state = db.query(SagaStateDB).filter(
             SagaStateDB.transaction_id == event.transaction_id).first()
+
         if saga_state:
+            # Verificar se é um cancelamento
+            if saga_state.status == "CANCELLING":
+                await handle_cancellation_credit_released_event(message)
+                return
+
+            # Lógica original para compensação normal
             logger.info(
                 f"Saga {event.transaction_id}: Credit Released (compensation completed).")
             if saga_state.status == "COMPENSATING" and saga_state.current_step == "CREDIT_RELEASE":
@@ -448,10 +461,18 @@ async def handle_vehicle_released_event(message):
     try:
         event = VehicleReleasedEvent.model_validate_json(message.data)
         logger.info(
-            f"Received VehicleReleasedEvent (compensation): {event.model_dump_json()}")
+            f"Received VehicleReleasedEvent: {event.model_dump_json()}")
+
         saga_state = db.query(SagaStateDB).filter(
             SagaStateDB.transaction_id == event.transaction_id).first()
+
         if saga_state:
+            # Verificar se é um cancelamento
+            if saga_state.status == "CANCELLING":
+                await handle_cancellation_vehicle_released_event(message)
+                return
+
+            # Lógica original para compensação normal
             logger.info(
                 f"Saga {event.transaction_id}: Vehicle Released (compensation completed).")
             if saga_state.status == "COMPENSATING" and saga_state.current_step == "VEHICLE_RELEASE":
@@ -717,32 +738,46 @@ async def subscribe_to_all_events():
         EVENT_TOPICS["payment.failed"]: handle_payment_failed_event,
         EVENT_TOPICS["payment.refunded"]: handle_payment_refunded_event,
         EVENT_TOPICS["payment.refund_failed"]: handle_payment_refund_failed_event,
+        # NOVOS - Adicionar estas linhas
+        EVENT_TOPICS["purchase.cancelled"]: handle_purchase_cancelled_event,
+        EVENT_TOPICS["purchase.cancellation_failed"]: handle_purchase_cancellation_failed_event,
     }
 
-    for event_type, topic_path in EVENT_TOPICS.items():
-        subscription_path = EVENT_SUBSCRIPTIONS[event_type]
-        handler = event_handlers[topic_path]
-        try:
-            publisher.create_topic(request={"name": topic_path})
-            logger.info(f"Topic {topic_path} ensured.")
-        except Exception as e:
-            if "Resource already exists" not in str(e):
-                logger.error(f"Error ensuring topic {topic_path}: {e}")
-        try:
-            subscriber.create_subscription(
-                request={"name": subscription_path, "topic": topic_path})
-            logger.info(f"Subscription {subscription_path} ensured.")
-        except Exception as e:
-            if "Resource already exists" not in str(e):
-                logger.error(
-                    f"Error ensuring subscription {subscription_path}: {e}")
+    # Iterar usando as chaves dos EVENT_TOPICS (não EVENT_SUBSCRIPTIONS)
+    for topic_path, handler in event_handlers.items():
+        # Encontrar a chave correspondente em EVENT_SUBSCRIPTIONS
+        event_type = None
+        for key, topic in EVENT_TOPICS.items():
+            if topic == topic_path:
+                event_type = key
+                break
 
-        logger.info(f"Listening for messages on {subscription_path}")
-        future = subscriber.subscribe(
-            subscription_path,
-            callback=lambda message, h=handler: loop.create_task(h(message))
-        )
-        futures.append(future)
+        if event_type and event_type in EVENT_SUBSCRIPTIONS:
+            subscription_path = EVENT_SUBSCRIPTIONS[event_type]
+
+            try:
+                publisher.create_topic(request={"name": topic_path})
+                logger.info(f"Topic {topic_path} ensured.")
+            except Exception as e:
+                if "Resource already exists" not in str(e):
+                    logger.error(f"Error ensuring topic {topic_path}: {e}")
+
+            try:
+                subscriber.create_subscription(
+                    request={"name": subscription_path, "topic": topic_path})
+                logger.info(f"Subscription {subscription_path} ensured.")
+            except Exception as e:
+                if "Resource already exists" not in str(e):
+                    logger.error(
+                        f"Error ensuring subscription {subscription_path}: {e}")
+
+            logger.info(f"Listening for messages on {subscription_path}")
+            future = subscriber.subscribe(
+                subscription_path,
+                callback=lambda message, h=handler: loop.create_task(
+                    h(message))
+            )
+            futures.append(future)
 
     logger.info("All Pub/Sub listeners started.")
 
@@ -864,6 +899,298 @@ async def get_saga_state(transaction_id: str, db: Annotated[Session, Depends(get
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Saga state not found")
     return SagaStateResponse(**saga_state.__dict__)
+
+
+@app.post("/purchase/{transaction_id}/cancel")
+async def cancel_purchase(transaction_id: str, db: Annotated[Session, Depends(get_db)]):
+    """Cancela uma compra em andamento."""
+
+    # Buscar estado da SAGA
+    saga_state = db.query(SagaStateDB).filter(
+        SagaStateDB.transaction_id == transaction_id).first()
+
+    if not saga_state:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Transaction not found"
+        )
+
+    # Verificar se pode ser cancelada
+    if saga_state.status in ["COMPLETED", "CANCELLED", "FAILED", "FAILED_COMPENSATED"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot cancel transaction with status: {saga_state.status}"
+        )
+
+    if saga_state.status in ["CANCELLING", "CANCELLATION_REQUESTED"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cancellation already in progress"
+        )
+
+    # Marcar como cancelamento solicitado
+    saga_state.status = "CANCELLATION_REQUESTED"
+    saga_state.context["cancellation_reason"] = "Customer requested cancellation"
+    saga_state.context["cancellation_requested_at"] = datetime.now(
+    ).isoformat()
+    db.add(saga_state)
+    db.commit()
+
+    # Iniciar processo de cancelamento baseado no step atual
+    await initiate_cancellation_process(saga_state, db)
+
+    return {
+        "message": "Cancellation initiated",
+        "transaction_id": transaction_id,
+        "current_step": saga_state.current_step,
+        "status": saga_state.status
+    }
+
+
+async def initiate_cancellation_process(saga_state: SagaStateDB, db: Session):
+    """Inicia o processo de cancelamento baseado no step atual."""
+
+    current_step = saga_state.current_step
+    transaction_id = saga_state.transaction_id
+
+    logger.info(
+        f"Initiating cancellation for transaction {transaction_id} at step {current_step}")
+
+    # Salvar o step original para referência
+    saga_state.context["original_step"] = current_step
+
+    # Atualizar status para CANCELLING
+    saga_state.status = "CANCELLING"
+    db.add(saga_state)
+    db.commit()
+
+    try:
+        if current_step in ["CREDIT_RESERVATION", "STARTED"]:
+            # Se ainda está na reserva de crédito ou apenas iniciou, só liberar crédito
+            logger.info(
+                f"Cancelling at early stage {current_step} - releasing credit only")
+            await publish_command(
+                COMMAND_TOPICS["credit.release"],
+                ReleaseCreditCommand(
+                    transaction_id=transaction_id,
+                    customer_id=saga_state.customer_id,
+                    amount=saga_state.amount,
+                    payment_type=saga_state.payment_type
+                ),
+                transaction_id
+            )
+            saga_state.current_step = "CANCELLATION_CREDIT_RELEASE"
+
+        elif current_step == "VEHICLE_RESERVATION":
+            # Liberar veículo e depois crédito
+            logger.info(
+                f"Cancelling at vehicle reservation stage - releasing vehicle first")
+            await publish_command(
+                COMMAND_TOPICS["vehicle.release"],
+                ReleaseVehicleCommand(
+                    transaction_id=transaction_id,
+                    vehicle_id=saga_state.vehicle_id
+                ),
+                transaction_id
+            )
+            saga_state.current_step = "CANCELLATION_VEHICLE_RELEASE"
+
+        elif current_step in ["PAYMENT_CODE_GENERATION", "PAYMENT_PROCESSING"]:
+            # Liberar veículo, depois crédito
+            logger.info(
+                f"Cancelling at payment stage {current_step} - releasing vehicle first")
+            await publish_command(
+                COMMAND_TOPICS["vehicle.release"],
+                ReleaseVehicleCommand(
+                    transaction_id=transaction_id,
+                    vehicle_id=saga_state.vehicle_id
+                ),
+                transaction_id
+            )
+            saga_state.current_step = "CANCELLATION_VEHICLE_RELEASE"
+
+        elif current_step == "MARK_VEHICLE_AS_SOLD":
+            # Transação já muito avançada, pode ser complexo cancelar
+            logger.warning(
+                f"Cancelling at advanced stage {current_step} - rejecting cancellation")
+            saga_state.status = "CANCELLATION_FAILED"
+            saga_state.context["cancellation_error"] = "Transaction too advanced to cancel"
+            await publish_event(
+                EVENT_TOPICS["purchase.cancellation_failed"],
+                CancellationFailedEvent(
+                    transaction_id=transaction_id,
+                    reason="Transaction too advanced to cancel - vehicle sale process already initiated",
+                    current_step=current_step
+                ),
+                transaction_id
+            )
+        elif current_step == "SAGA_COMPLETE":
+            # Transação já completada
+            logger.warning(
+                f"Attempting to cancel completed transaction {transaction_id}")
+            saga_state.status = "CANCELLATION_FAILED"
+            saga_state.context["cancellation_error"] = "Transaction already completed"
+            await publish_event(
+                EVENT_TOPICS["purchase.cancellation_failed"],
+                CancellationFailedEvent(
+                    transaction_id=transaction_id,
+                    reason="Transaction already completed",
+                    current_step=current_step
+                ),
+                transaction_id
+            )
+        else:
+            # Step desconhecido
+            logger.error(f"Unknown step for cancellation: {current_step}")
+            saga_state.status = "CANCELLATION_FAILED"
+            saga_state.context["cancellation_error"] = f"Unknown step: {current_step}"
+            await publish_event(
+                EVENT_TOPICS["purchase.cancellation_failed"],
+                CancellationFailedEvent(
+                    transaction_id=transaction_id,
+                    reason=f"Cannot cancel at unknown step: {current_step}",
+                    current_step=current_step
+                ),
+                transaction_id
+            )
+
+        db.add(saga_state)
+        db.commit()
+        logger.info(
+            f"Cancellation process initiated for {transaction_id}, new step: {saga_state.current_step}")
+
+    except Exception as e:
+        logger.error(
+            f"Error initiating cancellation for {transaction_id}: {e}")
+        saga_state.status = "CANCELLATION_FAILED"
+        saga_state.context["cancellation_error"] = str(e)
+        db.add(saga_state)
+        db.commit()
+
+
+async def handle_cancellation_credit_released_event(message):
+    """Handler para quando o crédito é liberado durante cancelamento."""
+    db = SessionLocal()
+    try:
+        event = CreditReleasedEvent.model_validate_json(message.data)
+        logger.info(
+            f"Received CreditReleasedEvent during cancellation: {event.model_dump_json()}")
+
+        saga_state = db.query(SagaStateDB).filter(
+            SagaStateDB.transaction_id == event.transaction_id).first()
+
+        if saga_state and saga_state.status == "CANCELLING":
+            logger.info(
+                f"Processing credit release for cancellation of {event.transaction_id}, current step: {saga_state.current_step}")
+
+            if saga_state.current_step == "CANCELLATION_CREDIT_RELEASE":
+                # Cancelamento completo
+                logger.info(
+                    f"Finalizing cancellation for {event.transaction_id}")
+                saga_state.status = "CANCELLED"
+                saga_state.current_step = "CANCELLATION_COMPLETE"
+
+                await publish_event(
+                    EVENT_TOPICS["purchase.cancelled"],
+                    PurchaseCancelledEvent(
+                        transaction_id=event.transaction_id,
+                        customer_id=saga_state.customer_id,
+                        vehicle_id=saga_state.vehicle_id,
+                        cancelled_step=saga_state.context.get(
+                            "original_step", "UNKNOWN"),
+                        reason=saga_state.context.get(
+                            "cancellation_reason", "Customer requested cancellation"),
+                        compensation_completed=True
+                    ),
+                    event.transaction_id
+                )
+                logger.info(
+                    f"Purchase {event.transaction_id} successfully cancelled")
+            else:
+                logger.warning(
+                    f"Received credit released event for cancellation but step is {saga_state.current_step}, not CANCELLATION_CREDIT_RELEASE")
+
+        db.add(saga_state)
+        db.commit()
+        message.ack()
+
+    except Exception as e:
+        logger.error(f"Error handling cancellation credit released: {e}")
+        db.rollback()
+        message.ack()
+    finally:
+        db.close()
+
+
+async def handle_cancellation_vehicle_released_event(message):
+    """Handler para quando o veículo é liberado durante cancelamento."""
+    db = SessionLocal()
+    try:
+        event = VehicleReleasedEvent.model_validate_json(message.data)
+        logger.info(
+            f"Received VehicleReleasedEvent during cancellation: {event.model_dump_json()}")
+
+        saga_state = db.query(SagaStateDB).filter(
+            SagaStateDB.transaction_id == event.transaction_id).first()
+
+        if saga_state and saga_state.status == "CANCELLING":
+            logger.info(
+                f"Processing vehicle release for cancellation of {event.transaction_id}, current step: {saga_state.current_step}")
+
+            if saga_state.current_step == "CANCELLATION_VEHICLE_RELEASE":
+                # Agora liberar crédito
+                logger.info(
+                    f"Vehicle released for cancellation {event.transaction_id}, now releasing credit")
+                saga_state.current_step = "CANCELLATION_CREDIT_RELEASE"
+                db.add(saga_state)
+                db.commit()
+
+                await publish_command(
+                    COMMAND_TOPICS["credit.release"],
+                    ReleaseCreditCommand(
+                        transaction_id=event.transaction_id,
+                        customer_id=saga_state.customer_id,
+                        amount=saga_state.amount,
+                        payment_type=saga_state.payment_type
+                    ),
+                    event.transaction_id
+                )
+            else:
+                logger.warning(
+                    f"Received vehicle released event for cancellation but step is {saga_state.current_step}, not CANCELLATION_VEHICLE_RELEASE")
+
+        message.ack()
+
+    except Exception as e:
+        logger.error(f"Error handling cancellation vehicle released: {e}")
+        db.rollback()
+        message.ack()
+    finally:
+        db.close()
+
+
+async def handle_purchase_cancelled_event(message):
+    """Handler para evento de compra cancelada."""
+    try:
+        event = PurchaseCancelledEvent.model_validate_json(message.data)
+        logger.info(
+            f"Purchase cancelled successfully: {event.model_dump_json()}")
+        message.ack()
+    except Exception as e:
+        logger.error(f"Error handling purchase cancelled event: {e}")
+        message.ack()
+
+
+async def handle_purchase_cancellation_failed_event(message):
+    """Handler para evento de falha no cancelamento."""
+    try:
+        event = CancellationFailedEvent.model_validate_json(message.data)
+        logger.error(
+            f"Purchase cancellation failed: {event.model_dump_json()}")
+        message.ack()
+    except Exception as e:
+        logger.error(f"Error handling purchase cancellation failed event: {e}")
+        message.ack()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))

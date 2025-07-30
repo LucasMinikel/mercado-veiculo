@@ -153,3 +153,26 @@ class PaymentRefundFailedEvent(BaseModel):
     payment_id: str
     reason: str
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class CancelPurchaseCommand(BaseModel):
+    transaction_id: str
+    reason: Optional[str] = "Customer requested cancellation"
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class PurchaseCancelledEvent(BaseModel):
+    transaction_id: str
+    customer_id: int
+    vehicle_id: int
+    cancelled_step: str  # Em qual etapa foi cancelado
+    reason: str
+    compensation_completed: bool = False
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class CancellationFailedEvent(BaseModel):
+    transaction_id: str
+    reason: str
+    current_step: str
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
