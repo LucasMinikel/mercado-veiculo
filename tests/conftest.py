@@ -4,6 +4,7 @@ import httpx
 import os
 import random
 import asyncio
+import string  # Importar para usar caracteres alfanuméricos
 from typing import Dict, Any
 
 # URLs dos serviços
@@ -18,6 +19,36 @@ ORQUESTRADOR_SERVICE_URL = os.getenv(
 
 # Timeout padrão para requisições
 DEFAULT_TIMEOUT = 30.0
+
+
+def generate_unique_vehicle_data(brand="Toyota", model="Corolla", year=2023, color="Branco", price=45000.0):
+    """Gera dados de veículo únicos e válidos para testes."""
+    # Garante que a placa tenha exatamente 7 caracteres (e.g., ABC1234)
+    # A placa deve ser no formato "LLLNNNN" ou "LLLNLNN" no Brasil
+    # Aqui, simplificamos para ABC + 4 chars alfanuméricos
+    license_plate_chars = ''.join(random.choices(
+        string.ascii_uppercase + string.digits, k=4))
+
+    # Garante que o chassi tenha exatamente 17 caracteres (VIN padrão)
+    chassi_random_chars = ''.join(random.choices(
+        # Mais dígitos para garantir 17 total
+        string.ascii_uppercase + string.digits + string.digits, k=14))
+
+    # Garante que o renavam tenha exatamente 11 caracteres (6 fixos + 5 dígitos)
+    renavam_random_digits = ''.join(random.choices(string.digits, k=5))
+
+    return {
+        "brand": brand,
+        "model": model,
+        "year": year,
+        "color": color,
+        "price": price,
+        "license_plate": f"ABC{license_plate_chars}",
+        # VIN + 14 caracteres alfanuméricos = 17
+        "chassi_number": f"VIN{chassi_random_chars}",
+        # 6 dígitos fixos + 5 dígitos aleatórios = 11
+        "renavam": f"123456{renavam_random_digits}"
+    }
 
 
 @pytest.fixture
@@ -36,16 +67,8 @@ def sample_customer():
 
 @pytest.fixture
 def sample_vehicle():
-    """Gera dados de veículo únicos para cada teste."""
-    rand_num = random.randint(1000, 9999)
-    return {
-        "brand": "Toyota",
-        "model": "Corolla",
-        "year": 2023,
-        "color": "Branco",
-        "price": 45000.0,
-        "license_plate": f"ABC{rand_num}"
-    }
+    """Fixture que retorna dados de veículo únicos, usando a função helper."""
+    return generate_unique_vehicle_data()
 
 
 @pytest.fixture

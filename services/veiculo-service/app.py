@@ -69,6 +69,10 @@ class VehicleDB(Base):
     color = Column(String)
     price = Column(Float)
     license_plate = Column(String, unique=True, index=True)
+    chassi_number = Column(String, unique=True, index=True,
+                           nullable=False)  # Adicionado
+    renavam = Column(String, unique=True, index=True,
+                     nullable=False)  # Adicionado
     is_reserved = Column(Boolean, default=False)
     is_sold = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.now)
@@ -81,6 +85,8 @@ class VehicleCreate(BaseModel):
     color: str = Field(..., min_length=3, max_length=30)
     price: float = Field(..., gt=0)
     license_plate: str = Field(..., min_length=7, max_length=10)
+    chassi_number: str = Field(..., min_length=17, max_length=17)  # Adicionado
+    renavam: str = Field(..., min_length=9, max_length=11)  # Adicionado
 
 
 class VehicleUpdate(BaseModel):
@@ -90,6 +96,10 @@ class VehicleUpdate(BaseModel):
     color: Optional[str] = Field(None, min_length=3, max_length=30)
     price: Optional[float] = Field(None, gt=0)
     license_plate: Optional[str] = Field(None, min_length=7, max_length=10)
+    chassi_number: Optional[str] = Field(
+        None, min_length=17, max_length=17)  # Adicionado
+    renavam: Optional[str] = Field(
+        None, min_length=9, max_length=11)  # Adicionado
 
 
 class VehicleResponse(BaseModel):
@@ -100,6 +110,8 @@ class VehicleResponse(BaseModel):
     color: str
     price: float
     license_plate: str
+    chassi_number: str  # Adicionado
+    renavam: str  # Adicionado
     is_reserved: bool
     is_sold: bool
     created_at: datetime
@@ -365,7 +377,8 @@ async def create_vehicle(vehicle: VehicleCreate, db: Annotated[Session, Depends(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Vehicle with this license plate already exists"
+            # Mensagem atualizada
+            detail="Vehicle with this license plate, chassi number or renavam already exists"
         )
     except Exception as e:
         logger.error(f"Error creating vehicle: {e}")
@@ -386,6 +399,10 @@ async def update_vehicle(vehicle_id: int, vehicle_update: VehicleUpdate, db: Ann
                 detail="Vehicle not found"
             )
 
+        # Adicionar esta linha de log
+        logger.info(
+            f"Attempting to update vehicle {vehicle_id}. Current state: is_reserved={db_vehicle.is_reserved}, is_sold={db_vehicle.is_sold}. Incoming update data: {vehicle_update.model_dump_json()}")
+
         # Não permitir edição de veículos reservados ou vendidos
         if db_vehicle.is_reserved or db_vehicle.is_sold:
             raise HTTPException(
@@ -405,10 +422,16 @@ async def update_vehicle(vehicle_id: int, vehicle_update: VehicleUpdate, db: Ann
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="License plate already exists for another vehicle"
+            # Mensagem atualizada
+            detail="License plate, chassi number or renavam already exists for another vehicle"
         )
-    except Exception as e:
-        logger.error(f"Error updating vehicle: {e}")
+    # Capture HTTPExceptions (like 400, 404, 409) and re-raise them
+    except HTTPException:
+        db.rollback()  # Certifique-se de que o rollback ocorra mesmo para HTTPExceptions
+        raise  # Re-lança a HTTPException capturada
+    except Exception as e:  # Capture any other unexpected errors
+        logger.error(f"Error updating vehicle: {e}", exc_info=True)
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error"
