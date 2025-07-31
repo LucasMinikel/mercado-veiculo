@@ -2,7 +2,6 @@
 
 set -e
 
-# Cores para a saída
 VERMELHO='\033[0;31m'
 VERDE='\033[0;32m'
 AMARELO='\033[1;33m'
@@ -11,7 +10,6 @@ NC='\033[0m'
 
 echo -e "${VERDE}🗄️  Iniciando deploy do Cloud SQL...${NC}"
 
-# Obter diretório atual e configuração
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SQL_DIR="$PROJECT_ROOT/infrastructure/terraform/sql"
@@ -33,7 +31,6 @@ if [ -z "$PROJECT_ID" ]; then
     exit 1
 fi
 
-# Verificar se a senha do banco existe
 if [ -z "$DB_PASSWORD" ]; then
     echo -e "${AMARELO}🔐 Senha do banco de dados não encontrada${NC}"
     echo -e "${AMARELO}Por favor, defina uma senha para o banco de dados PostgreSQL:${NC}"
@@ -55,7 +52,6 @@ echo -e "${AZUL}🏷️  Ambiente: $ENVIRONMENT${NC}"
 
 gcloud config set project $PROJECT_ID
 
-# Habilitar APIs necessárias
 echo -e "${VERDE}🔌 Garantindo que as APIs estejam habilitadas...${NC}"
 gcloud services enable \
     sqladmin.googleapis.com \
@@ -65,11 +61,9 @@ gcloud services enable \
 
 cd "$SQL_DIR"
 
-# Verificar backend
 BACKEND_CONFIG_FILE="backend-sql-${ENVIRONMENT}.hcl"
 if [ ! -f "$BACKEND_CONFIG_FILE" ]; then
     echo -e "${AMARELO}⚠️  Backend SQL não configurado. Configurando...${NC}"
-    # Criar arquivo de backend para SQL
     BUCKET_NAME="${PROJECT_ID}-terraform-state"
     cat > "$BACKEND_CONFIG_FILE" << EOF
 bucket = "$BUCKET_NAME"
@@ -77,13 +71,11 @@ prefix = "sql/$ENVIRONMENT"
 EOF
 fi
 
-# Inicializar se necessário
 if [ ! -d ".terraform" ]; then
     echo -e "${VERDE}🔄 Inicializando Terraform para SQL...${NC}"
     terraform init -backend-config="backend-sql-${ENVIRONMENT}.hcl"
 fi
 
-# Validar e aplicar
 terraform validate
 
 echo -e "${VERDE}📋 Criando plano do SQL...${NC}"
@@ -97,7 +89,6 @@ echo -e "${VERDE}🚀 Aplicando infraestrutura SQL...${NC}"
 timeout 900 terraform apply -input=false tfplan
 rm -f tfplan
 
-# Obter outputs
 SQL_INSTANCE=$(terraform output -raw sql_instance_name)
 SQL_IP=$(terraform output -raw sql_public_ip)
 

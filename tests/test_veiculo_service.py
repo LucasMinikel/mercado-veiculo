@@ -1,393 +1,151 @@
-import requests
-import time
-import threading
-import uuid
-
-VEICULO_SERVICE_URL = "http://veiculo-service:8080"
+import pytest
+import random
+import httpx
+from conftest import VEICULO_SERVICE_URL, DEFAULT_TIMEOUT, create_test_vehicle, generate_unique_vehicle_data
 
 
 class TestVeiculoService:
-    def generate_unique_vehicle_data(self):
-        unique_id = str(uuid.uuid4())[:8]
-        return {
-            "brand": f"Test_{unique_id}",
-            "model": f"Model_{unique_id}",
-            "year": 2023,
-            "color": f"Color_{unique_id}",
-            "price": 50000.00 + (hash(unique_id) % 50000)
+    """Testes específicos do serviço de veículos."""
+
+    @pytest.mark.asyncio
+    async def test_create_and_get_vehicle(self, sample_vehicle):
+        """Testa criação e busca de veículo."""
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            response = await client.post(f"{VEICULO_SERVICE_URL}/vehicles", json=sample_vehicle)
+            assert response.status_code == 201
+
+            created_vehicle = response.json()
+            vehicle_id = created_vehicle["id"]
+
+            assert created_vehicle["brand"] == sample_vehicle["brand"]
+            assert created_vehicle["model"] == sample_vehicle["model"]
+            assert created_vehicle["price"] == sample_vehicle["price"]
+            assert created_vehicle["license_plate"] == '*' * (len(
+                sample_vehicle["license_plate"]) - 3) + sample_vehicle["license_plate"][-3:]
+            assert created_vehicle["chassi_number"] == sample_vehicle["chassi_number"]
+            assert created_vehicle["renavam"] == sample_vehicle["renavam"]
+            assert created_vehicle["is_reserved"] is False
+            assert created_vehicle["is_sold"] is False
+            assert "id" in created_vehicle
+            assert "created_at" in created_vehicle
+
+            response = await client.get(f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}")
+            assert response.status_code == 200
+
+            found_vehicle = response.json()
+            assert found_vehicle["id"] == vehicle_id
+            assert found_vehicle["brand"] == sample_vehicle["brand"]
+            assert found_vehicle["model"] == sample_vehicle["model"]
+            assert found_vehicle["price"] == sample_vehicle["price"]
+            assert found_vehicle["chassi_number"] == sample_vehicle["chassi_number"]
+            assert found_vehicle["renavam"] == sample_vehicle["renavam"]
+
+    @pytest.mark.asyncio
+    async def test_create_vehicle_duplicate_identifiers(self, sample_vehicle):
+        """Testa criação de veículo com placa, chassi ou renavam duplicados."""
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            response = await client.post(f"{VEICULO_SERVICE_URL}/vehicles", json=sample_vehicle)
+            assert response.status_code == 201
+
+            duplicate_vehicle_data = sample_vehicle.copy()
+            duplicate_vehicle_data["model"] = "Another Model"
+
+            response = await client.post(f"{VEICULO_SERVICE_URL}/vehicles", json=duplicate_vehicle_data)
+            assert response.status_code == 409
+            assert "license plate, chassi number or renavam already exists" in response.json()[
+                "detail"]
+
+    @pytest.mark.asyncio
+    async def test_update_vehicle_success(self, sample_vehicle):
+        """Testa atualização bem-sucedida de veículo."""
+        vehicle = await create_test_vehicle(sample_vehicle)
+        vehicle_id = vehicle["id"]
+
+        new_identifiers = generate_unique_vehicle_data()
+        updated_data = {
+            "color": "Azul Metálico",
+            "price": 47500.0,
+            "chassi_number": new_identifiers["chassi_number"],
+            "renavam": new_identifiers["renavam"]
         }
 
-    def test_health_check(self):
-        response = requests.get(f"{VEICULO_SERVICE_URL}/health")
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            response = await client.put(f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}", json=updated_data)
+            assert response.status_code == 200
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data['status'] == 'healthy'
-        assert data['service'] == 'vehicle-service'
-        assert data['version'] == '1.0.0'
-        assert 'timestamp' in data
+            updated_vehicle = response.json()
+            assert updated_vehicle["id"] == vehicle_id
+            assert updated_vehicle["color"] == updated_data["color"]
+            assert updated_vehicle["price"] == updated_data["price"]
+            assert updated_vehicle["chassi_number"] == updated_data["chassi_number"]
+            assert updated_vehicle["renavam"] == updated_data["renavam"]
+            assert updated_vehicle["brand"] == sample_vehicle["brand"]
 
-    def test_get_vehicles_success(self):
-        response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles")
+    @pytest.mark.asyncio
+    async def test_update_vehicle_duplicate_renavam(self, sample_vehicle):
+        """Testa atualização de veículo com renavam duplicado."""
+        vehicle1 = await create_test_vehicle(sample_vehicle)
 
-        assert response.status_code == 200
-        data = response.json()
-        assert 'vehicles' in data
-        assert 'total' in data
-        assert 'timestamp' in data
-        assert isinstance(data['vehicles'], list)
-        assert data['total'] >= 0
-
-    def test_get_vehicles_with_filters(self):
-        requests.post(f"{VEICULO_SERVICE_URL}/vehicles",
-                      json=self.generate_unique_vehicle_data())
-        requests.post(f"{VEICULO_SERVICE_URL}/vehicles",
-                      json=self.generate_unique_vehicle_data())
-
-        response = requests.get(
-            f"{VEICULO_SERVICE_URL}/vehicles?status_filter=available")
-        assert response.status_code == 200
-        data = response.json()
-
-        for vehicle in data['vehicles']:
-            assert vehicle['status'] == 'available'
-
-        vehicle1 = self.generate_unique_vehicle_data()
-        vehicle1['price'] = 10000.00
-        requests.post(f"{VEICULO_SERVICE_URL}/vehicles", json=vehicle1)
-
-        vehicle2 = self.generate_unique_vehicle_data()
-        vehicle2['price'] = 5000.00
-        requests.post(f"{VEICULO_SERVICE_URL}/vehicles", json=vehicle2)
-
-        vehicle3 = self.generate_unique_vehicle_data()
-        vehicle3['price'] = 15000.00
-        requests.post(f"{VEICULO_SERVICE_URL}/vehicles", json=vehicle3)
-
-        response = requests.get(
-            f"{VEICULO_SERVICE_URL}/vehicles?sort_by=price&sort_order=asc")
-        assert response.status_code == 200
-        data = response.json()
-
-        prices_to_check = [10000.00, 5000.00, 15000.00]
-        filtered_for_sort = [v['price']
-                             for v in data['vehicles'] if v['price'] in prices_to_check]
-
-        if len(filtered_for_sort) >= 2:
-            assert filtered_for_sort == sorted(filtered_for_sort)
-
-        response = requests.get(
-            f"{VEICULO_SERVICE_URL}/vehicles?sort_by=price&sort_order=desc")
-        assert response.status_code == 200
-        data = response.json()
-
-        filtered_for_sort_desc = [
-            v['price'] for v in data['vehicles'] if v['price'] in prices_to_check]
-        if len(filtered_for_sort_desc) >= 2:
-            assert filtered_for_sort_desc == sorted(
-                filtered_for_sort_desc, reverse=True)
-
-    def test_get_vehicles_structure(self):
-        requests.post(f"{VEICULO_SERVICE_URL}/vehicles",
-                      json=self.generate_unique_vehicle_data())
-
-        response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles")
-        data = response.json()
-
-        if data['vehicles']:
-            vehicle = data['vehicles'][0]
-            required_fields = ['id', 'brand', 'model', 'year',
-                               'color', 'price', 'status', 'created_at']
-            for field in required_fields:
-                assert field in vehicle
-
-            assert isinstance(vehicle['price'], (int, float))
-            assert isinstance(vehicle['year'], int)
-            assert vehicle['year'] >= 1900
-
-    def test_get_vehicle_by_id(self):
-        new_vehicle = self.generate_unique_vehicle_data()
-
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles",
-            json=new_vehicle,
-            headers={'Content-Type': 'application/json'}
+        vehicle2_data = generate_unique_vehicle_data(
+            brand="Ford", model="Ka", year=2020, color="Vermelho", price=25000.0
         )
-        vehicle_id = response.json()['id']
+        vehicle2 = await create_test_vehicle(vehicle2_data)
 
-        response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}")
-        assert response.status_code == 200
+        update_data = {"renavam": sample_vehicle["renavam"]}
 
-        vehicle = response.json()
-        assert vehicle['id'] == vehicle_id
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            response = await client.put(f"{VEICULO_SERVICE_URL}/vehicles/{vehicle2['id']}", json=update_data)
+            assert response.status_code == 409
+            assert "License plate, chassi number or renavam already exists for another vehicle" in response.json()[
+                "detail"]
 
-        required_fields = ['id', 'brand', 'model', 'year',
-                           'color', 'price', 'status', 'created_at']
-        for field in required_fields:
-            assert field in vehicle
+    @pytest.mark.asyncio
+    async def test_update_vehicle_reserved_or_sold(self, sample_vehicle):
+        """Testa que não é possível atualizar veículo reservado ou vendido."""
+        vehicle = await create_test_vehicle(sample_vehicle)
+        vehicle_id = vehicle["id"]
 
-    def test_get_nonexistent_vehicle(self):
-        response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles/9999999")
-        assert response.status_code == 404
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            response = await client.patch(f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}/mark_as_sold")
+            assert response.status_code == 200
+            sold_vehicle = response.json()
+            assert sold_vehicle["is_sold"] is True
 
-        data = response.json()
-        assert 'detail' in data
-        assert data['detail'] == 'Vehicle not found'
+            update_data = {"color": "Cor Nova"}
+            response = await client.put(f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}", json=update_data)
+            assert response.status_code == 400
+            assert "Cannot edit vehicle that is reserved or sold" in response.json()[
+                "detail"]
 
-    def test_create_vehicle_success(self):
-        new_vehicle = self.generate_unique_vehicle_data()
+    @pytest.mark.asyncio
+    async def test_list_vehicles_with_new_fields(self, sample_vehicle):
+        """Testa listagem de veículos."""
+        await create_test_vehicle(sample_vehicle)
 
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles",
-            json=new_vehicle,
-            headers={'Content-Type': 'application/json'}
-        )
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            response = await client.get(f"{VEICULO_SERVICE_URL}/vehicles")
+            assert response.status_code == 200
 
-        assert response.status_code == 201
-        data = response.json()
-        assert data['brand'] == new_vehicle['brand']
-        assert data['model'] == new_vehicle['model']
-        assert data['year'] == new_vehicle['year']
-        assert data['color'] == new_vehicle['color']
-        assert data['price'] == new_vehicle['price']
-        assert data['status'] == 'available'
-        assert 'id' in data
-        assert 'created_at' in data
+            data = response.json()
+            assert "vehicles" in data
+            assert "total" in data
+            assert "timestamp" in data
+            assert data["total"] >= 1
+            assert len(data["vehicles"]) >= 1
 
-    def test_create_vehicle_validation_errors(self):
-        incomplete_vehicle = {
-            "brand": "Ford",
-            "model": "Focus"
-        }
+            first_vehicle = data["vehicles"][0]
+            assert "chassi_number" in first_vehicle
+            assert "renavam" in first_vehicle
 
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles",
-            json=incomplete_vehicle,
-            headers={'Content-Type': 'application/json'}
-        )
+    @pytest.mark.asyncio
+    async def test_health_check(self):
+        """Testa health check do serviço."""
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            response = await client.get(f"{VEICULO_SERVICE_URL}/health")
+            assert response.status_code == 200
 
-        assert response.status_code == 422
-        data = response.json()
-        assert 'detail' in data
-
-        invalid_year_vehicle = {
-            "brand": "Ford",
-            "model": "Focus",
-            "year": 1800,
-            "color": "Azul",
-            "price": 50000.00
-        }
-
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles",
-            json=invalid_year_vehicle,
-            headers={'Content-Type': 'application/json'}
-        )
-
-        assert response.status_code == 422
-
-        negative_price_vehicle = {
-            "brand": "Ford",
-            "model": "Focus",
-            "year": 2023,
-            "color": "Azul",
-            "price": -1000.00
-        }
-
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles",
-            json=negative_price_vehicle,
-            headers={'Content-Type': 'application/json'}
-        )
-
-        assert response.status_code == 422
-
-    def test_reserve_vehicle_success(self):
-        new_vehicle = self.generate_unique_vehicle_data()
-
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles",
-            json=new_vehicle,
-            headers={'Content-Type': 'application/json'}
-        )
-        vehicle_id = response.json()['id']
-
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}/reserve")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data['message'] == 'Vehicle reserved successfully'
-        assert data['vehicle_id'] == vehicle_id
-        assert data['status'] == 'reserved'
-
-        response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}")
-        vehicle = response.json()
-        assert vehicle['status'] == 'reserved'
-        assert 'reserved_at' in vehicle
-
-    def test_reserve_nonexistent_vehicle(self):
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles/9999999/reserve")
-
-        assert response.status_code == 404
-        data = response.json()
-        assert data['detail'] == 'Vehicle not found'
-
-    def test_reserve_already_reserved_vehicle(self):
-        new_vehicle = self.generate_unique_vehicle_data()
-
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles",
-            json=new_vehicle,
-            headers={'Content-Type': 'application/json'}
-        )
-        vehicle_id = response.json()['id']
-
-        requests.post(f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}/reserve")
-
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}/reserve")
-
-        assert response.status_code == 400
-        data = response.json()
-        assert data['detail'] == 'Vehicle not available for reservation'
-
-    def test_release_vehicle_success(self):
-        new_vehicle = self.generate_unique_vehicle_data()
-
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles",
-            json=new_vehicle,
-            headers={'Content-Type': 'application/json'}
-        )
-        vehicle_id = response.json()['id']
-
-        requests.post(f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}/reserve")
-
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}/release")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data['message'] == 'Vehicle released successfully'
-        assert data['vehicle_id'] == vehicle_id
-        assert data['status'] == 'available'
-
-        response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}")
-        vehicle = response.json()
-        assert vehicle['status'] == 'available'
-
-    def test_release_non_reserved_vehicle(self):
-        new_vehicle = self.generate_unique_vehicle_data()
-
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles",
-            json=new_vehicle,
-            headers={'Content-Type': 'application/json'}
-        )
-        vehicle_id = response.json()['id']
-
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}/release")
-
-        assert response.status_code == 400
-        data = response.json()
-        assert data['detail'] == 'Vehicle is not reserved'
-
-    def test_delete_vehicle_success(self):
-        new_vehicle = self.generate_unique_vehicle_data()
-
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles",
-            json=new_vehicle,
-            headers={'Content-Type': 'application/json'}
-        )
-        vehicle_id = response.json()['id']
-
-        response = requests.delete(
-            f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}")
-        assert response.status_code == 204
-
-        response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}")
-        assert response.status_code == 404
-
-    def test_delete_nonexistent_vehicle(self):
-        response = requests.delete(f"{VEICULO_SERVICE_URL}/vehicles/9999999")
-        assert response.status_code == 404
-
-        data = response.json()
-        assert data['detail'] == 'Vehicle not found'
-
-    def test_api_response_time(self):
-        start_time = time.time()
-        response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles")
-        end_time = time.time()
-
-        response_time = end_time - start_time
-        assert response_time < 2.0
-        assert response.status_code == 200
-
-    def test_concurrent_requests(self):
-        results = []
-        errors = []
-
-        def make_request():
-            try:
-                response = requests.get(
-                    f"{VEICULO_SERVICE_URL}/vehicles", timeout=5)
-                results.append(response.status_code)
-            except Exception as e:
-                errors.append(str(e))
-
-        threads = []
-        for i in range(5):
-            thread = threading.Thread(target=make_request)
-            threads.append(thread)
-            thread.start()
-
-        for thread in threads:
-            thread.join()
-
-        assert len(errors) == 0, f"Erros encontrados: {errors}"
-
-        assert all(status == 200 for status in results)
-        assert len(results) == 5
-
-    def test_vehicle_workflow_complete(self):
-        new_vehicle = self.generate_unique_vehicle_data()
-
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles",
-            json=new_vehicle,
-            headers={'Content-Type': 'application/json'}
-        )
-        assert response.status_code == 201
-        vehicle_id = response.json()['id']
-
-        response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}")
-        assert response.status_code == 200
-        assert response.json()['status'] == 'available'
-
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}/reserve")
-        assert response.status_code == 200
-
-        response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}")
-        assert response.status_code == 200
-        assert response.json()['status'] == 'reserved'
-
-        response = requests.post(
-            f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}/release")
-        assert response.status_code == 200
-
-        response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}")
-        assert response.status_code == 200
-        assert response.json()['status'] == 'available'
-
-        response = requests.delete(
-            f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}")
-        assert response.status_code == 204
-
-        response = requests.get(f"{VEICULO_SERVICE_URL}/vehicles/{vehicle_id}")
-        assert response.status_code == 404
+            health = response.json()
+            assert health["status"] == "healthy"
+            assert health["service"] == "vehicle-service"
+            assert "timestamp" in health
+            assert "version" in health

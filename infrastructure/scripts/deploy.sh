@@ -20,7 +20,7 @@ fi
 if [ -z "$DB_PASSWORD" ]; then
     read -s -p "Senha do DB: " DB_PASSWORD
     echo ""
-    echo "db_password = "$DB_PASSWORD"" >> "$TERRAFORM_DIR/terraform.tfvars"
+    echo "db_password = \"$DB_PASSWORD\"" >> "$TERRAFORM_DIR/terraform.tfvars"
 fi
 
 gcloud config set project $PROJECT_ID
@@ -33,6 +33,7 @@ gcloud services enable \
     secretmanager.googleapis.com \
     vpcaccess.googleapis.com \
     servicenetworking.googleapis.com \
+    apigateway.googleapis.com \
     --project=$PROJECT_ID \
     --quiet
 
@@ -55,10 +56,11 @@ REPO_URL=$(terraform output -raw repository_url)
 
 gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
-for service in cliente-service veiculo-service pagamento-service; do
+cd "$PROJECT_ROOT"
+
+for service in cliente-service veiculo-service pagamento-service orquestrador; do
     echo "🔨 Construindo $service..."
-    cd "$PROJECT_ROOT/services/$service"
-    docker build -t "${REPO_URL}/$service:latest" .
+    docker build -f "services/$service/Dockerfile" -t "${REPO_URL}/$service:latest" .
     docker push "${REPO_URL}/$service:latest"
 done
 
@@ -72,6 +74,7 @@ terraform apply -auto-approve \
     -var="cliente_image=${REPO_URL}/cliente-service:latest" \
     -var="veiculo_image=${REPO_URL}/veiculo-service:latest" \
     -var="pagamento_image=${REPO_URL}/pagamento-service:latest" \
+    -var="orquestrador_image=${REPO_URL}/orquestrador:latest" \
     -var="use_real_images=true"
 
 echo "✅ Deploy concluído!"

@@ -2,4 +2,8 @@ project_id   = "your-gcp-project-id"
 project_name = "microservices-saga"
 region       = "southamerica-east1"
 environment  = "dev"
-
+support_email = "seu-email@dominio.com"
+authorized_users = [
+  "user:seu-email@dominio.com",
+  "group:vehicle-admins@dominio.com"
+]

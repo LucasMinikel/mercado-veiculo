@@ -1,4 +1,4 @@
-.PHONY: help setup setup-backend deploy deploy-sql deploy-app destroy destroy-sql destroy-app dev test stop clean info build up down
+.PHONY: help setup deploy deploy-sql deploy-code destroy destroy-sql destroy-code dev dev-clean test stop clean info build up down
 
 # ==============================================================================
 # Variáveis de configuração
@@ -21,11 +21,9 @@ help: ## Mostra os comandos disponíveis
 setup: ## Configura projeto inicial
 	@chmod +x infrastructure/scripts/*.sh
 	@./infrastructure/scripts/setup-gcp.sh $(PROJECT_ID)
-
-setup-backend: ## Configura backend remoto
-	@chmod +x infrastructure/scripts/setup-backend.sh
 	@./infrastructure/scripts/setup-backend.sh
-
+	@./infrastructure/scripts/setup-iap-config.sh
+	
 deploy: ## Deploy completo
 	@chmod +x infrastructure/scripts/deploy.sh
 	@./infrastructure/scripts/deploy.sh
@@ -38,7 +36,7 @@ deploy-sql: ## Deploy apenas SQL
 		-var="environment=$(ENVIRONMENT)" \
 		-var="db_password=$(shell grep 'db_password' infrastructure/terraform/terraform.tfvars | cut -d'"' -f2)"
 
-deploy-app: ## Deploy apenas aplicações
+deploy-code: ## Deploy apenas aplicações
 	@chmod +x infrastructure/scripts/deploy-code.sh
 	@./infrastructure/scripts/deploy-code.sh
 
@@ -59,7 +57,7 @@ destroy-sql: ## Destroi apenas SQL
 		-var="environment=$(ENVIRONMENT)" \
 		-var="db_password=dummy"
 
-destroy-app: ## Destroi apenas aplicações
+destroy-code: ## Destroi apenas aplicações
 	@cd infrastructure/terraform && \
 	terraform destroy -target=module.app -auto-approve \
 		-var="project_id=$(PROJECT_ID)" \
@@ -75,7 +73,7 @@ build: ## Constrói as imagens localmente
 	@docker-compose build
 
 up: ## Inicia os serviços localmente
-	@docker-compose up -d cliente-service veiculo-service pagamento-service
+	@docker-compose up -d cliente-service veiculo-service pagamento-service orquestrador
 
 down: ## Para os serviços locais
 	@docker-compose down
@@ -86,16 +84,19 @@ dev: up ## Modo desenvolvimento local com logs
 	@echo "   Cliente:   http://localhost:8080"
 	@echo "   Veículo:   http://localhost:8081"
 	@echo "   Pagamento: http://localhost:8082"
+	@echo "   Orquestrador: http://localhost:8083" 
 	@echo ""
 	@echo "📝 Logs em tempo real (Ctrl+C para sair):"
-	@docker-compose logs -f cliente-service veiculo-service pagamento-service
+	@docker-compose logs -f cliente-service veiculo-service pagamento-service orquestrador
+
+dev-clean: clean build dev ## Limpa recursos e inicia modo desenvolvimento local
 
 test: up ## Executa os testes localmente
-	@echo "⏳ Aguardando serviços..."
-	@until curl -sf http://localhost:8080/health >/dev/null 2>&1; do sleep 2; done
-	@until curl -sf http://localhost:8081/health >/dev/null 2>&1; do sleep 2; done
-	@until curl -sf http://localhost:8082/health >/dev/null 2>&1; do sleep 2; done
-	@docker-compose run --rm tests
+	@docker-compose --profile test run --rm tests python -m pytest -v -s
+
+test-fast: ## Executa os testes rapidamente (assume que serviços já estão rodando)
+	@echo "⚡ Executando testes rápidos..."
+	@docker-compose --profile test run --rm --no-deps tests python -m pytest -v -s
 
 stop: ## Para desenvolvimento local
 	@docker-compose down

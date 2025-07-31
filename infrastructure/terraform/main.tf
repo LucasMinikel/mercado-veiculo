@@ -22,6 +22,7 @@ locals {
     cliente-service   = { image = var.use_real_images ? var.cliente_image : "gcr.io/cloudrun/hello" }
     veiculo-service   = { image = var.use_real_images ? var.veiculo_image : "gcr.io/cloudrun/hello" }
     pagamento-service = { image = var.use_real_images ? var.pagamento_image : "gcr.io/cloudrun/hello" }
+    orquestrador      = { image = var.use_real_images ? var.orquestrador_image : "gcr.io/cloudrun/hello" }
   }
 }
 
@@ -53,4 +54,26 @@ module "app" {
   db_secret_id    = module.sql.secret_id
 
   depends_on = [module.sql]
+}
+
+module "gateway" {
+  source = "./modules/gateway"
+
+  project_id   = var.project_id
+  region       = "us-east1"
+  environment  = var.environment
+  short_name   = local.short_name
+  service_urls = module.app.service_urls
+
+  depends_on = [module.app]
+}
+
+module "iap" {
+  source = "./modules/iap"
+
+  project_id       = var.project_id
+  support_email    = var.support_email
+  authorized_users = var.authorized_users
+
+  depends_on = [module.gateway]
 }
