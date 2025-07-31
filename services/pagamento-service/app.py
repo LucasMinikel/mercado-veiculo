@@ -210,7 +210,6 @@ async def publish_event(topic_path: str, event_data: BaseModel, transaction_id: 
 
 
 def generate_payment_code() -> str:
-    """Gera um código de pagamento único."""
     return f"PAY{random.randint(100000, 999999)}{int(datetime.now().timestamp())}"
 
 

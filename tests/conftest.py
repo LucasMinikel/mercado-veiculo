@@ -1,13 +1,11 @@
-# ./tests/conftest.py
 import pytest
 import httpx
 import os
 import random
 import asyncio
-import string  # Importar para usar caracteres alfanuméricos
+import string
 from typing import Dict, Any
 
-# URLs dos serviços
 CLIENTE_SERVICE_URL = os.getenv(
     "CLIENTE_SERVICE_URL", "http://cliente-service:8080")
 VEICULO_SERVICE_URL = os.getenv(
@@ -17,24 +15,17 @@ PAGAMENTO_SERVICE_URL = os.getenv(
 ORQUESTRADOR_SERVICE_URL = os.getenv(
     "ORQUESTRADOR_SERVICE_URL", "http://orquestrador:8080")
 
-# Timeout padrão para requisições
 DEFAULT_TIMEOUT = 30.0
 
 
 def generate_unique_vehicle_data(brand="Toyota", model="Corolla", year=2023, color="Branco", price=45000.0):
     """Gera dados de veículo únicos e válidos para testes."""
-    # Garante que a placa tenha exatamente 7 caracteres (e.g., ABC1234)
-    # A placa deve ser no formato "LLLNNNN" ou "LLLNLNN" no Brasil
-    # Aqui, simplificamos para ABC + 4 chars alfanuméricos
     license_plate_chars = ''.join(random.choices(
         string.ascii_uppercase + string.digits, k=4))
 
-    # Garante que o chassi tenha exatamente 17 caracteres (VIN padrão)
     chassi_random_chars = ''.join(random.choices(
-        # Mais dígitos para garantir 17 total
         string.ascii_uppercase + string.digits + string.digits, k=14))
 
-    # Garante que o renavam tenha exatamente 11 caracteres (6 fixos + 5 dígitos)
     renavam_random_digits = ''.join(random.choices(string.digits, k=5))
 
     return {
@@ -44,9 +35,7 @@ def generate_unique_vehicle_data(brand="Toyota", model="Corolla", year=2023, col
         "color": color,
         "price": price,
         "license_plate": f"ABC{license_plate_chars}",
-        # VIN + 14 caracteres alfanuméricos = 17
         "chassi_number": f"VIN{chassi_random_chars}",
-        # 6 dígitos fixos + 5 dígitos aleatórios = 11
         "renavam": f"123456{renavam_random_digits}"
     }
 
@@ -60,7 +49,7 @@ def sample_customer():
         "email": f"joao{rand_num}@email.com",
         "phone": f"11999{rand_num:05d}",
         "document": f"{rand_num:011d}",
-        "initial_balance": 60000.0,  # Saldo suficiente para compras
+        "initial_balance": 60000.0,
         "credit_limit": 50000.0
     }
 
@@ -80,8 +69,8 @@ def low_credit_customer():
         "email": f"maria{rand_num}@email.com",
         "phone": f"11888{rand_num:05d}",
         "document": f"{rand_num:011d}",
-        "initial_balance": 1000.0,  # Saldo baixo
-        "credit_limit": 1000.0      # Crédito baixo
+        "initial_balance": 1000.0,
+        "credit_limit": 1000.0
     }
 
 

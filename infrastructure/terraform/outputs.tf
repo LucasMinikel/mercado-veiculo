@@ -31,7 +31,6 @@ output "api_gateway_service_account" {
   value       = module.app.api_gateway_service_account
 }
 
-# ✅ CORRIGIDO: Outputs do módulo de autenticação
 output "api_authentication" {
   description = "Configurações de autenticação da API"
   value = {
@@ -48,7 +47,6 @@ output "api_service_account_key" {
   sensitive   = true
 }
 
-# ✅ ADICIONADO: Informações úteis para acesso
 output "access_instructions" {
   description = "Instruções para acessar a API"
   value = {

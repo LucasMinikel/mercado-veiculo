@@ -1,4 +1,3 @@
-# ./tests/test_performance.py
 import pytest
 import httpx
 import asyncio
@@ -22,7 +21,6 @@ class TestPerformance:
     async def test_concurrent_customer_creation(self):
         """Testa criação concorrente de clientes."""
         async def create_customer(index):
-            # Gerar dados únicos para cada cliente
             base_num = random.randint(400000, 499999)
             customer_data = {
                 "name": f"Cliente Concorrente {base_num}",
@@ -37,7 +35,6 @@ class TestPerformance:
                 response = await client.post(f"{CLIENTE_SERVICE_URL}/customers", json=customer_data)
                 return response.status_code == 201
 
-        # Criar 5 clientes concorrentemente
         start_time = time.time()
         tasks = [create_customer(i) for i in range(5)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -47,7 +44,7 @@ class TestPerformance:
         print(f"Criações bem-sucedidas: {successful_creations}/5")
         print(f"Tempo total: {end_time - start_time:.2f}s")
 
-        assert successful_creations >= 4  # Pelo menos 4 de 5 devem funcionar
+        assert successful_creations >= 4
 
     @pytest.mark.asyncio
     async def test_saga_response_time(self, sample_customer, sample_vehicle):
@@ -58,7 +55,7 @@ class TestPerformance:
         purchase_data = {
             "customer_id": customer["id"],
             "vehicle_id": vehicle["id"],
-            "payment_type": "cash"  # ✅ Corrigido: removido amount, adicionado payment_type
+            "payment_type": "cash"
         }
 
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
@@ -71,7 +68,6 @@ class TestPerformance:
             response_time = end_time - start_time
             print(f"Tempo de resposta da SAGA: {response_time:.3f}s")
 
-            # SAGA deve responder em menos de 2 segundos
             assert response_time < 2.0
 
             purchase = response.json()
@@ -100,7 +96,6 @@ class TestPerformance:
                 response_time = end_time - start_time
                 print(f"Health check {name}: {response_time:.3f}s")
 
-                # Health check deve responder em menos de 1 segundo
                 assert response_time < 1.0
 
     @pytest.mark.asyncio
@@ -110,7 +105,6 @@ class TestPerformance:
         total_time = 0
 
         for i in range(3):
-            # Gerar dados únicos para cada iteração
             base_num = random.randint(500000, 599999) + i
             customer_data = {
                 "name": f"Cliente Sequencial {base_num}",
@@ -135,7 +129,6 @@ class TestPerformance:
             print(f"Clientes criados: {customers_created}/3")
             print(f"Tempo médio por criação: {avg_time:.3f}s")
 
-            # Tempo médio deve ser menor que 1 segundo
             assert avg_time < 1.0
 
-        assert customers_created >= 2  # Pelo menos 2 de 3 devem funcionar
+        assert customers_created >= 2

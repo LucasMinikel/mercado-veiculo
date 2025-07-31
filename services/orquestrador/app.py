@@ -1,4 +1,3 @@
-# ./services/orquestrador/app.py
 from fastapi import FastAPI, HTTPException, status, Depends
 from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional, Annotated
@@ -352,12 +351,10 @@ async def handle_credit_released_event(message):
             SagaStateDB.transaction_id == event.transaction_id).first()
 
         if saga_state:
-            # Verificar se é um cancelamento
             if saga_state.status == "CANCELLING":
                 await handle_cancellation_credit_released_event(message)
                 return
 
-            # Lógica original para compensação normal
             logger.info(
                 f"Saga {event.transaction_id}: Credit Released (compensation completed).")
             if saga_state.status == "COMPENSATING" and saga_state.current_step == "CREDIT_RELEASE":
@@ -467,12 +464,10 @@ async def handle_vehicle_released_event(message):
             SagaStateDB.transaction_id == event.transaction_id).first()
 
         if saga_state:
-            # Verificar se é um cancelamento
             if saga_state.status == "CANCELLING":
                 await handle_cancellation_vehicle_released_event(message)
                 return
 
-            # Lógica original para compensação normal
             logger.info(
                 f"Saga {event.transaction_id}: Vehicle Released (compensation completed).")
             if saga_state.status == "COMPENSATING" and saga_state.current_step == "VEHICLE_RELEASE":
@@ -738,14 +733,11 @@ async def subscribe_to_all_events():
         EVENT_TOPICS["payment.failed"]: handle_payment_failed_event,
         EVENT_TOPICS["payment.refunded"]: handle_payment_refunded_event,
         EVENT_TOPICS["payment.refund_failed"]: handle_payment_refund_failed_event,
-        # NOVOS - Adicionar estas linhas
         EVENT_TOPICS["purchase.cancelled"]: handle_purchase_cancelled_event,
         EVENT_TOPICS["purchase.cancellation_failed"]: handle_purchase_cancellation_failed_event,
     }
 
-    # Iterar usando as chaves dos EVENT_TOPICS (não EVENT_SUBSCRIPTIONS)
     for topic_path, handler in event_handlers.items():
-        # Encontrar a chave correspondente em EVENT_SUBSCRIPTIONS
         event_type = None
         for key, topic in EVENT_TOPICS.items():
             if topic == topic_path:
@@ -786,7 +778,6 @@ async def subscribe_to_all_events():
 async def start_purchase_saga(request: PurchaseRequest, db: Annotated[Session, Depends(get_db)]):
     transaction_id = str(uuid.uuid4())
 
-    # 1. Buscar e validar veículo
     vehicle_info = await get_vehicle_info(request.vehicle_id)
     if not vehicle_info:
         raise HTTPException(
@@ -807,7 +798,6 @@ async def start_purchase_saga(request: PurchaseRequest, db: Annotated[Session, D
             detail="Invalid vehicle price"
         )
 
-    # 2. Buscar e validar cliente
     customer_info = await get_customer_info(request.customer_id)
     if not customer_info:
         raise HTTPException(
@@ -815,7 +805,6 @@ async def start_purchase_saga(request: PurchaseRequest, db: Annotated[Session, D
             detail="Customer not found"
         )
 
-    # 3. Validar capacidade de pagamento
     if request.payment_type == "cash":
         if customer_info.get("account_balance", 0) < vehicle_price:
             raise HTTPException(
@@ -829,12 +818,11 @@ async def start_purchase_saga(request: PurchaseRequest, db: Annotated[Session, D
                 detail="Insufficient credit limit"
             )
 
-    # 4. Criar estado da SAGA
     saga_state = SagaStateDB(
         transaction_id=transaction_id,
         customer_id=request.customer_id,
         vehicle_id=request.vehicle_id,
-        amount=vehicle_price,  # Preço real do veículo
+        amount=vehicle_price,
         payment_type=request.payment_type,
         status="STARTED",
         current_step="CREDIT_RESERVATION",
@@ -857,7 +845,6 @@ async def start_purchase_saga(request: PurchaseRequest, db: Annotated[Session, D
     logger.info(f"Saga {transaction_id} started. Initial state saved.")
 
     try:
-        # 5. Iniciar SAGA com comando de reserva de crédito
         await publish_command(
             COMMAND_TOPICS["credit.reserve"],
             ReserveCreditCommand(
@@ -903,9 +890,6 @@ async def get_saga_state(transaction_id: str, db: Annotated[Session, Depends(get
 
 @app.post("/purchase/{transaction_id}/cancel")
 async def cancel_purchase(transaction_id: str, db: Annotated[Session, Depends(get_db)]):
-    """Cancela uma compra em andamento."""
-
-    # Buscar estado da SAGA
     saga_state = db.query(SagaStateDB).filter(
         SagaStateDB.transaction_id == transaction_id).first()
 
@@ -948,8 +932,6 @@ async def cancel_purchase(transaction_id: str, db: Annotated[Session, Depends(ge
 
 
 async def initiate_cancellation_process(saga_state: SagaStateDB, db: Session):
-    """Inicia o processo de cancelamento baseado no step atual."""
-
     current_step = saga_state.current_step
     transaction_id = saga_state.transaction_id
 
@@ -1069,7 +1051,6 @@ async def initiate_cancellation_process(saga_state: SagaStateDB, db: Session):
 
 
 async def handle_cancellation_credit_released_event(message):
-    """Handler para quando o crédito é liberado durante cancelamento."""
     db = SessionLocal()
     try:
         event = CreditReleasedEvent.model_validate_json(message.data)
@@ -1123,7 +1104,6 @@ async def handle_cancellation_credit_released_event(message):
 
 
 async def handle_cancellation_vehicle_released_event(message):
-    """Handler para quando o veículo é liberado durante cancelamento."""
     db = SessionLocal()
     try:
         event = VehicleReleasedEvent.model_validate_json(message.data)
@@ -1170,7 +1150,6 @@ async def handle_cancellation_vehicle_released_event(message):
 
 
 async def handle_purchase_cancelled_event(message):
-    """Handler para evento de compra cancelada."""
     try:
         event = PurchaseCancelledEvent.model_validate_json(message.data)
         logger.info(
@@ -1182,7 +1161,6 @@ async def handle_purchase_cancelled_event(message):
 
 
 async def handle_purchase_cancellation_failed_event(message):
-    """Handler para evento de falha no cancelamento."""
     try:
         event = CancellationFailedEvent.model_validate_json(message.data)
         logger.error(

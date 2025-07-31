@@ -7,14 +7,11 @@ terraform {
   }
 }
 
-# API Gateway API
 resource "google_api_gateway_api" "vehicle_sales_api" {
   provider = google-beta
   api_id   = "${var.short_name}-${var.environment}-api"
   project  = var.project_id
 }
-
-# OpenAPI Spec
 locals {
   openapi_spec = templatefile("${path.module}/openapi.yaml", {
     cliente_service_url   = var.service_urls["cliente-service"]
@@ -24,7 +21,6 @@ locals {
   })
 }
 
-# API Config
 resource "google_api_gateway_api_config" "vehicle_sales_config" {
   provider      = google-beta
   api           = google_api_gateway_api.vehicle_sales_api.api_id
@@ -42,8 +38,6 @@ resource "google_api_gateway_api_config" "vehicle_sales_config" {
     create_before_destroy = true
   }
 }
-
-# Gateway
 resource "google_api_gateway_gateway" "vehicle_sales_gateway" {
   provider   = google-beta
   api_config = google_api_gateway_api_config.vehicle_sales_config.id

@@ -1,4 +1,3 @@
-# ./tests/test_cliente_service.py
 import pytest
 import httpx
 from conftest import CLIENTE_SERVICE_URL, DEFAULT_TIMEOUT, create_test_customer
@@ -26,7 +25,6 @@ class TestClienteService:
     @pytest.mark.asyncio
     async def test_get_customer_success(self, sample_customer):
         """Testa busca bem-sucedida de cliente."""
-        # Criar cliente primeiro
         customer = await create_test_customer(sample_customer)
         customer_id = customer["id"]
 
@@ -50,11 +48,9 @@ class TestClienteService:
     async def test_create_customer_duplicate_email(self, sample_customer):
         """Testa criação de cliente com email duplicado."""
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
-            # Criar primeiro cliente
             response = await client.post(f"{CLIENTE_SERVICE_URL}/customers", json=sample_customer)
             assert response.status_code == 201
 
-            # Tentar criar segundo cliente com mesmo email
             response = await client.post(f"{CLIENTE_SERVICE_URL}/customers", json=sample_customer)
             assert response.status_code == 409
 
@@ -62,11 +58,11 @@ class TestClienteService:
     async def test_create_customer_invalid_data(self):
         """Testa criação de cliente com dados inválidos."""
         invalid_customer = {
-            "name": "A",  # Nome muito curto
-            "email": "invalid-email",  # Email inválido
-            "phone": "123",  # Telefone muito curto
-            "document": "123",  # Documento muito curto
-            "credit_limit": -1000  # Crédito negativo
+            "name": "A",
+            "email": "invalid-email",
+            "phone": "123",
+            "document": "123",
+            "credit_limit": -1000
         }
 
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
@@ -76,7 +72,6 @@ class TestClienteService:
     @pytest.mark.asyncio
     async def test_list_customers(self, sample_customer):
         """Testa listagem de clientes."""
-        # Criar cliente primeiro
         await create_test_customer(sample_customer)
 
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:

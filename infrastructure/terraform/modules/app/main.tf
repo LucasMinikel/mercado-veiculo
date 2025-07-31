@@ -31,7 +31,6 @@ resource "google_service_account" "api_gateway" {
   description  = "Service account used by API Gateway to invoke Cloud Run services"
 }
 
-# Permissão para o API Gateway invocar os serviços
 resource "google_project_iam_member" "api_gateway_invoker" {
   project = var.project_id
   role    = "roles/run.invoker"

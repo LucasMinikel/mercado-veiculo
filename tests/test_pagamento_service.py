@@ -1,4 +1,3 @@
-# ./tests/test_pagamento_service.py - versão alternativa mais simples
 import pytest
 from conftest import PAGAMENTO_SERVICE_URL
 
@@ -12,7 +11,6 @@ class TestPagamentoService:
         import httpx
 
         async with httpx.AsyncClient(timeout=10.0) as client:
-            # Testar health check
             response = await client.get(f"{PAGAMENTO_SERVICE_URL}/health")
             assert response.status_code == 200
 
@@ -20,7 +18,6 @@ class TestPagamentoService:
             assert health["status"] == "healthy"
             print(f"✅ Serviço de pagamento está saudável")
 
-            # Tentar listar códigos de pagamento (pode retornar lista vazia)
             try:
                 response = await client.get(f"{PAGAMENTO_SERVICE_URL}/payment-codes")
                 if response.status_code == 200:

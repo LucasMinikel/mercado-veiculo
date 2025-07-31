@@ -1,4 +1,3 @@
-# ./services/cliente-service/app.py
 from fastapi import FastAPI, HTTPException, status, Depends
 from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional, Annotated
@@ -67,7 +66,6 @@ class CustomerDB(Base):
 
     account_balance = Column(Float, nullable=False, default=0.0)
     credit_limit = Column(Float, nullable=False, default=0.0)
-    # Corrigido para 'used_credit'
     used_credit = Column(Float, nullable=False, default=0.0)
 
     status = Column(String, default="active")
@@ -75,7 +73,6 @@ class CustomerDB(Base):
 
     @property
     def available_credit(self):
-        # available_credit é uma propriedade calculada, não um campo que pode ser setado diretamente
         return max(0, self.credit_limit - self.used_credit)
 
     def can_purchase(self, amount: float, payment_type: str) -> bool:
@@ -111,7 +108,7 @@ class CustomerResponse(BaseModel):
     document: str
     account_balance: float
     credit_limit: float
-    used_credit: float  # Corrigido para 'used_credit'
+    used_credit: float
     available_credit: float
     status: str
     created_at: datetime
@@ -123,7 +120,6 @@ class CustomerResponse(BaseModel):
             doc = obj_dict['document']
             obj_dict['document'] = '*' * (len(doc) - 4) + doc[-4:]
 
-        # Garante que available_credit seja calculado no objeto retornado
         obj_dict['available_credit'] = obj.available_credit
         return cls(**obj_dict)
 
@@ -237,9 +233,6 @@ async def handle_reserve_credit_command(message):
             message.ack()
             return
 
-        # Check if there is enough total credit (balance + limit)
-        # This validation should ideally be done by the orchestrator before sending the command,
-        # but is kept here as a safeguard.
         if command.payment_type == "cash":
             if command.amount > customer.account_balance:
                 await publish_event(
@@ -283,7 +276,6 @@ async def handle_reserve_credit_command(message):
             f"Before deduction for customer {customer.id}: Account Balance={customer.account_balance}, Available Credit={customer.available_credit}, Used Credit={customer.used_credit}")
         logger.info(f"Amount to deduct: {command.amount}")
 
-        # Apply deduction based on payment_type
         if command.payment_type == "cash":
             customer.account_balance -= command.amount
             logger.info(
@@ -292,10 +284,6 @@ async def handle_reserve_credit_command(message):
             customer.used_credit += command.amount
             logger.info(
                 f"Deducted {command.amount} by increasing used_credit (credit payment).")
-
-        # Note: If the payment type implies a mix (e.g., partial cash, partial credit),
-        # the logic here would need to be more complex. For now, it's assumed
-        # to be either purely cash or purely credit.
 
         logger.info(
             f"After deduction (before commit) for customer {customer.id}: Account Balance={customer.account_balance}, Available Credit={customer.available_credit}, Used Credit={customer.used_credit}")
@@ -313,13 +301,10 @@ async def handle_reserve_credit_command(message):
                 transaction_id=command.transaction_id,
                 customer_id=customer.id,
                 reserved_amount=command.amount,
-                amount=command.amount,        # Adicionado: campo 'amount' para o evento
-                # Adicionado: campo 'payment_type' para o evento
+                amount=command.amount,
                 payment_type=command.payment_type,
-                # O `used_balance` aqui indica se a dedução foi feita apenas do `account_balance`
-                # (ou seja, se a compra foi do tipo cash e o saldo foi suficiente)
                 used_balance=(command.payment_type == "cash" and command.amount <= (
-                    customer.account_balance + command.amount))  # Re-avaliei a lógica
+                    customer.account_balance + command.amount))
             ),
             command.transaction_id
         )
@@ -331,7 +316,6 @@ async def handle_reserve_credit_command(message):
             f"Validation error for ReserveCreditCommand: {e} - Data: {message.data}")
         message.ack()
     except Exception as e:
-        # Adicionado exc_info=True
         logger.error(
             f"Error processing ReserveCreditCommand: {e}", exc_info=True)
         db.rollback()
@@ -359,13 +343,11 @@ async def handle_release_credit_command(message):
         if command.payment_type == "cash":
             customer.account_balance += command.amount
             new_balance = customer.account_balance
-            # available_credit é calculado dinamicamente
             new_available_credit = customer.available_credit
-        else:  # Assumindo "credit" para o payment_type
+        else:
             customer.used_credit = max(
                 0, customer.used_credit - command.amount)
             new_balance = customer.account_balance
-            # available_credit é calculado dinamicamente
             new_available_credit = customer.available_credit
 
         db.add(customer)
@@ -460,7 +442,7 @@ async def create_customer(customer: CustomerCreate, db: Annotated[Session, Depen
             document=customer.document,
             account_balance=customer.initial_balance,
             credit_limit=customer.credit_limit,
-            used_credit=0.0  # Inicializa used_credit
+            used_credit=0.0
         )
         db.add(db_customer)
         db.commit()

@@ -1,4 +1,3 @@
-# ./shared/models.py
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
@@ -165,7 +164,7 @@ class PurchaseCancelledEvent(BaseModel):
     transaction_id: str
     customer_id: int
     vehicle_id: int
-    cancelled_step: str  # Em qual etapa foi cancelado
+    cancelled_step: str
     reason: str
     compensation_completed: bool = False
     timestamp: datetime = Field(default_factory=datetime.utcnow)
