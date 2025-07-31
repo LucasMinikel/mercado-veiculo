@@ -67,3 +67,13 @@ module "gateway" {
 
   depends_on = [module.app]
 }
+
+module "iap" {
+  source = "./modules/iap"
+
+  project_id       = var.project_id
+  support_email    = var.support_email
+  authorized_users = var.authorized_users
+
+  depends_on = [module.gateway]
+}

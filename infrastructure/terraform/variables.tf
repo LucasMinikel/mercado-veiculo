@@ -60,3 +60,15 @@ variable "db_password" {
 variable "state_bucket_name" {
   type = string
 }
+
+variable "support_email" {
+  type        = string
+  description = "Email de suporte para OAuth consent screen"
+  default     = ""
+}
+
+variable "authorized_users" {
+  type        = list(string)
+  description = "Lista de usuários autorizados (emails ou grupos)"
+  default     = []
+}

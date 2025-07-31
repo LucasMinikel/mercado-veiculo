@@ -25,3 +25,36 @@ output "api_endpoints" {
     base_url = "https://${module.gateway.gateway_url}"
   }
 }
+
+output "api_gateway_service_account" {
+  description = "Service account do API Gateway"
+  value       = module.app.api_gateway_service_account
+}
+
+# ✅ CORRIGIDO: Outputs do módulo de autenticação
+output "api_authentication" {
+  description = "Configurações de autenticação da API"
+  value = {
+    support_email          = module.iap.support_email
+    authorized_users_count = module.iap.authorized_users_count
+    auth_enabled           = module.iap.auth_enabled
+    service_account_email  = module.iap.api_service_account_email
+  }
+}
+
+output "api_service_account_key" {
+  description = "Chave do service account para autenticação (use com cuidado)"
+  value       = module.iap.api_service_account_key
+  sensitive   = true
+}
+
+# ✅ ADICIONADO: Informações úteis para acesso
+output "access_instructions" {
+  description = "Instruções para acessar a API"
+  value = {
+    gateway_url   = "https://${module.gateway.gateway_url}"
+    health_check  = "https://${module.gateway.gateway_url}/health"
+    auth_required = "Use: gcloud auth print-access-token"
+    example_curl  = "curl -H 'Authorization: Bearer $(gcloud auth print-access-token)' https://${module.gateway.gateway_url}/vehicles"
+  }
+}

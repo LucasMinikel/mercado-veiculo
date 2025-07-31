@@ -1,4 +1,4 @@
-.PHONY: help setup setup-backend deploy deploy-sql deploy-code destroy destroy-sql destroy-code dev dev-clean test stop clean info build up down
+.PHONY: help setup deploy deploy-sql deploy-code destroy destroy-sql destroy-code dev dev-clean test stop clean info build up down
 
 # ==============================================================================
 # Variáveis de configuração
@@ -21,11 +21,9 @@ help: ## Mostra os comandos disponíveis
 setup: ## Configura projeto inicial
 	@chmod +x infrastructure/scripts/*.sh
 	@./infrastructure/scripts/setup-gcp.sh $(PROJECT_ID)
-
-setup-backend: ## Configura backend remoto
-	@chmod +x infrastructure/scripts/setup-backend.sh
 	@./infrastructure/scripts/setup-backend.sh
-
+	@./infrastructure/scripts/setup-iap-config.sh
+	
 deploy: ## Deploy completo
 	@chmod +x infrastructure/scripts/deploy.sh
 	@./infrastructure/scripts/deploy.sh
