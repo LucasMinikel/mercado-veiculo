@@ -11,3 +11,8 @@ output "repository_url" {
 output "service_account_email" {
   value = google_service_account.cloud_run.email
 }
+
+output "api_gateway_service_account" {
+  description = "Email do service account do API Gateway"
+  value       = google_service_account.api_gateway.email
+}

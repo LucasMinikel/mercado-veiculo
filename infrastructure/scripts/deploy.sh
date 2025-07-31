@@ -33,6 +33,7 @@ gcloud services enable \
     secretmanager.googleapis.com \
     vpcaccess.googleapis.com \
     servicenetworking.googleapis.com \
+    apigateway.googleapis.com \
     --project=$PROJECT_ID \
     --quiet
 

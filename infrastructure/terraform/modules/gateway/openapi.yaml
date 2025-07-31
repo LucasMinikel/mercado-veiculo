@@ -1,0 +1,379 @@
+swagger: '2.0'
+info:
+  title: Vehicle Sales API
+  description: API para plataforma de revenda de veículos
+  version: '1.0.0'
+schemes:
+  - https
+
+paths:
+  # === HEALTH CHECK ===
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health check da API
+      x-google-backend:
+        address: ${orquestrador_url}
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        200:
+          description: API funcionando
+        503:
+          description: Serviço indisponível
+
+  # === VEÍCULOS ===
+  /vehicles:
+    get:
+      operationId: listarVeiculos
+      summary: Listar veículos disponíveis
+      parameters:
+        - name: status_filter
+          in: query
+          type: string
+          enum: ["available", "sold", "reserved"]
+        - name: sort_by
+          in: query
+          type: string
+          default: "price_asc"
+          enum: ["price_asc", "price_desc", "year_desc", "brand_asc"]
+      x-google-backend:
+        address: ${veiculo_service_url}
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        200:
+          description: Lista de veículos
+        500:
+          description: Erro interno
+    
+    post:
+      operationId: cadastrarVeiculo
+      summary: Cadastrar novo veículo
+      parameters:
+        - name: vehicle
+          in: body
+          required: true
+          schema:
+            type: object
+            required:
+              - brand
+              - model
+              - year
+              - color
+              - price
+              - license_plate
+              - chassi_number
+              - renavam
+            properties:
+              brand:
+                type: string
+              model:
+                type: string
+              year:
+                type: integer
+              color:
+                type: string
+              price:
+                type: number
+              license_plate:
+                type: string
+              chassi_number:
+                type: string
+              renavam:
+                type: string
+      x-google-backend:
+        address: ${veiculo_service_url}
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        201:
+          description: Veículo cadastrado
+        400:
+          description: Dados inválidos
+        409:
+          description: Veículo já existe
+
+  /vehicles/{vehicle_id}:
+    get:
+      operationId: obterVeiculo
+      summary: Obter detalhes de um veículo
+      parameters:
+        - name: vehicle_id
+          in: path
+          required: true
+          type: integer
+      x-google-backend:
+        address: ${veiculo_service_url}
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        200:
+          description: Detalhes do veículo
+        404:
+          description: Veículo não encontrado
+
+    put:
+      operationId: atualizarVeiculo
+      summary: Atualizar veículo
+      parameters:
+        - name: vehicle_id
+          in: path
+          required: true
+          type: integer
+        - name: vehicle
+          in: body
+          required: true
+          schema:
+            type: object
+            properties:
+              brand:
+                type: string
+              model:
+                type: string
+              year:
+                type: integer
+              color:
+                type: string
+              price:
+                type: number
+              license_plate:
+                type: string
+              chassi_number:
+                type: string
+              renavam:
+                type: string
+      x-google-backend:
+        address: ${veiculo_service_url}
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        200:
+          description: Veículo atualizado
+        400:
+          description: Veículo reservado/vendido
+        404:
+          description: Veículo não encontrado
+
+  /vehicles/{vehicle_id}/mark_as_sold:
+    patch:
+      operationId: marcarVeiculoVendido
+      summary: Marcar veículo como vendido
+      parameters:
+        - name: vehicle_id
+          in: path
+          required: true
+          type: integer
+      x-google-backend:
+        address: ${veiculo_service_url}
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        200:
+          description: Veículo marcado como vendido
+        404:
+          description: Veículo não encontrado
+
+  # === CLIENTES ===
+  /customers:
+    get:
+      operationId: listarClientes
+      summary: Listar clientes cadastrados
+      x-google-backend:
+        address: ${cliente_service_url}
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        200:
+          description: Lista de clientes
+        500:
+          description: Erro interno
+
+    post:
+      operationId: cadastrarCliente
+      summary: Cadastrar novo cliente
+      parameters:
+        - name: customer
+          in: body
+          required: true
+          schema:
+            type: object
+            required:
+              - name
+              - email
+              - phone
+              - document
+            properties:
+              name:
+                type: string
+              email:
+                type: string
+              phone:
+                type: string
+              document:
+                type: string
+              initial_balance:
+                type: number
+                default: 0.0
+              credit_limit:
+                type: number
+                default: 0.0
+      x-google-backend:
+        address: ${cliente_service_url}
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        201:
+          description: Cliente cadastrado
+        400:
+          description: Dados inválidos
+        409:
+          description: Cliente já existe
+
+  /customers/{customer_id}:
+    get:
+      operationId: obterCliente
+      summary: Obter detalhes de um cliente
+      parameters:
+        - name: customer_id
+          in: path
+          required: true
+          type: integer
+      x-google-backend:
+        address: ${cliente_service_url}
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        200:
+          description: Detalhes do cliente
+        404:
+          description: Cliente não encontrado
+
+    put:
+      operationId: atualizarCliente
+      summary: Atualizar cliente
+      parameters:
+        - name: customer_id
+          in: path
+          required: true
+          type: integer
+        - name: customer
+          in: body
+          required: true
+          schema:
+            type: object
+            properties:
+              name:
+                type: string
+              email:
+                type: string
+              phone:
+                type: string
+              initial_balance:
+                type: number
+              credit_limit:
+                type: number
+      x-google-backend:
+        address: ${cliente_service_url}
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        200:
+          description: Cliente atualizado
+        404:
+          description: Cliente não encontrado
+        409:
+          description: Email já existe
+
+  # === COMPRAS/VENDAS ===
+  /purchase:
+    post:
+      operationId: iniciarCompra
+      summary: Iniciar processo de compra (SAGA)
+      parameters:
+        - name: purchase
+          in: body
+          required: true
+          schema:
+            type: object
+            required:
+              - customer_id
+              - vehicle_id
+              - payment_type
+            properties:
+              customer_id:
+                type: integer
+              vehicle_id:
+                type: integer
+              payment_type:
+                type: string
+                enum: ["cash", "credit"]
+      x-google-backend:
+        address: ${orquestrador_url}
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        202:
+          description: Processo de compra iniciado
+        400:
+          description: Dados inválidos
+        404:
+          description: Cliente ou veículo não encontrado
+
+  # === PAGAMENTOS ===
+  /payment-codes:
+    get:
+      operationId: listarCodigosPagamento
+      summary: Listar códigos de pagamento
+      x-google-backend:
+        address: ${pagamento_service_url}
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        200:
+          description: Lista de códigos de pagamento
+
+  /payment-codes/{code}:
+    get:
+      operationId: obterCodigoPagamento
+      summary: Obter detalhes de um código de pagamento
+      parameters:
+        - name: code
+          in: path
+          required: true
+          type: string
+      x-google-backend:
+        address: ${pagamento_service_url}
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        200:
+          description: Detalhes do código de pagamento
+        404:
+          description: Código não encontrado
+
+  /payments:
+    get:
+      operationId: listarPagamentos
+      summary: Listar pagamentos realizados
+      x-google-backend:
+        address: ${pagamento_service_url}
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        200:
+          description: Lista de pagamentos
+
+    post:
+      operationId: processarPagamento
+      summary: Processar pagamento
+      parameters:
+        - name: payment
+          in: body
+          required: true
+          schema:
+            type: object
+            required:
+              - payment_code
+            properties:
+              payment_code:
+                type: string
+              payment_method:
+                type: string
+                default: "pix"
+      x-google-backend:
+        address: ${pagamento_service_url}
+        path_translation: APPEND_PATH_TO_ADDRESS
+      responses:
+        201:
+          description: Pagamento processado
+        400:
+          description: Código inválido ou expirado
+        404:
+          description: Código não encontrado

@@ -55,3 +55,15 @@ module "app" {
 
   depends_on = [module.sql]
 }
+
+module "gateway" {
+  source = "./modules/gateway"
+
+  project_id   = var.project_id
+  region       = "us-east1"
+  environment  = var.environment
+  short_name   = local.short_name
+  service_urls = module.app.service_urls
+
+  depends_on = [module.app]
+}

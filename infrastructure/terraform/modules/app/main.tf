@@ -25,6 +25,19 @@ resource "google_project_iam_member" "cloud_run_sql_client" {
   member  = "serviceAccount:${google_service_account.cloud_run.email}"
 }
 
+resource "google_service_account" "api_gateway" {
+  account_id   = "${var.short_name}-${var.environment}-gateway"
+  display_name = "API Gateway Service Account"
+  description  = "Service account used by API Gateway to invoke Cloud Run services"
+}
+
+# Permissão para o API Gateway invocar os serviços
+resource "google_project_iam_member" "api_gateway_invoker" {
+  project = var.project_id
+  role    = "roles/run.invoker"
+  member  = "serviceAccount:${google_service_account.api_gateway.email}"
+}
+
 resource "google_secret_manager_secret_iam_member" "db_password_access" {
   secret_id = var.db_secret_id
   role      = "roles/secretmanager.secretAccessor"
@@ -174,5 +187,5 @@ resource "google_cloud_run_v2_service_iam_member" "public_access" {
   project  = google_cloud_run_v2_service.services[each.key].project
   name     = google_cloud_run_v2_service.services[each.key].name
   role     = "roles/run.invoker"
-  member   = "allUsers"
+  member   = "serviceAccount:${google_service_account.api_gateway.email}"
 }
